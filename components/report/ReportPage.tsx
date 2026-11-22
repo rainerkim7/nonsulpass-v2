@@ -70,7 +70,17 @@ export default function ReportPage({
   const totalScore = reportData ? reportData.totalScore : 0
   const maxScore = reportData?.maxPossibleScore ?? 100
   const cutline = reportData?.cutlineScore ?? 82
-  const scoreDiff = totalScore - cutline
+  // 대학 고유 등급 및 100점 환산 참고점수 계산 (대학 발표 논술 합격선 100점 기준과 직관적 비교)
+  const officialGrade = reportData?.officialGrade || undefined
+  const gradeRationale = reportData?.gradeRationale || undefined
+  const normalizedScore100 =
+    typeof reportData?.normalizedScore100 === 'number' && reportData.normalizedScore100 > 0
+      ? Math.round(reportData.normalizedScore100)
+      : maxScore > 0
+      ? Math.round((totalScore / maxScore) * 100)
+      : totalScore
+  const isNon100OrGraded = Boolean(officialGrade) || maxScore !== 100
+  const scoreDiff = normalizedScore100 - cutline
   const statusVerdict = reportData?.statusVerdict || (totalScore === 0 ? '채점 대기' : scoreDiff >= 0 ? '합격 안정권' : scoreDiff >= -5 ? '합격 가능권' : '도전 권장')
 
   const charCount = reportData?.charCount ?? 0
@@ -164,23 +174,69 @@ export default function ReportPage({
           <div className="score-main">
             <div className="score-ring">
               <div>
-                <strong>{totalScore}</strong>
-                <span>/ {maxScore}점</span>
+                {officialGrade ? (
+                  <>
+                    <strong>{officialGrade}</strong>
+                    <span>{totalScore} / {maxScore}점</span>
+                  </>
+                ) : (
+                  <>
+                    <strong>{totalScore}</strong>
+                    <span>/ {maxScore}점</span>
+                  </>
+                )}
               </div>
             </div>
             <div className="score-copy">
-              <p className="eyebrow">TOTAL SCORE</p>
+              <p className="eyebrow">
+                {officialGrade ? 'UNIVERSITY OFFICIAL GRADE & SCORE' : 'TOTAL SCORE'}
+              </p>
               <h2>{statusVerdict}</h2>
+              {isNon100OrGraded && (
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    flexWrap: 'wrap',
+                    gap: '8px',
+                    marginBottom: '6px',
+                    padding: '5px 10px',
+                    borderRadius: '8px',
+                    backgroundColor: '#eff6ff',
+                    border: '1px solid #bfdbfe',
+                    fontSize: '12.5px',
+                    color: '#1e3a8a',
+                  }}
+                >
+                  {officialGrade && (
+                    <span>
+                      대학 공식 등급 <strong>{officialGrade}</strong>
+                    </span>
+                  )}
+                  <span>
+                    원배점 <strong>{totalScore}/{maxScore}점</strong>
+                  </span>
+                  <span>·</span>
+                  <span>
+                    100점 환산 참고점수 <strong>{normalizedScore100}점</strong>
+                  </span>
+                </div>
+              )}
               <p>
-                예상 합격선 <strong>{cutline}점</strong> 대비{' '}
+                예상 합격선 <strong>{cutline}점</strong> (100점 환산 기준) 대비{' '}
                 <b className={scoreDiff < 0 ? 'negative' : 'kpi-good'}>
                   {scoreDiff > 0 ? `+${scoreDiff}점` : `${scoreDiff}점`}
                 </b>
               </p>
+              {gradeRationale && (
+                <p style={{ fontSize: '12.5px', color: '#475569', marginTop: '4px' }}>
+                  📌 등급 판정 근거: {gradeRationale}
+                </p>
+              )}
               <div className="score-progress">
-                <span style={{ width: `${Math.min(100, Math.max(10, Math.round((totalScore / maxScore) * 100)))}%` }} />
+                <span style={{ width: `${Math.min(100, Math.max(10, normalizedScore100))}%` }} />
               </div>
-              <small>최근 {currentUnivShortName} 합격자 평균 81.4점 (실시간 공식 기준 대조)</small>
+              <small>최근 {currentUnivShortName} 합격자 평균 81.4점 (100점 환산 기준 · 실시간 공식 기준 대조)</small>
             </div>
           </div>
           <div className="kpi-grid">

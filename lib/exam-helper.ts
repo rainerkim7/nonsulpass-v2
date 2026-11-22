@@ -28,6 +28,17 @@ export interface QuestionRubric {
   deductions: string[]
 }
 
+export interface QuestionScoringSystem {
+  /** 채점 방식: 'score'(원배점 점수제) | 'grade'(등급제) | 'both'(등급+원배점 병기) */
+  type: 'score' | 'grade' | 'both'
+  /** 문항 원만점 (예: 30, 40, 50, 100) */
+  maxScore: number
+  /** 대학 공식 등급 체계 목록 (예: ['A+', 'A', 'B+', 'B', 'C', 'D', 'F']) */
+  gradeScale?: string[]
+  /** 예상 합격선 안내 문구 (예: 'A 이상 / 100점 환산 82점') */
+  cutlineLabel?: string
+}
+
 export interface QuestionData {
   id: string
   label: string
@@ -50,6 +61,23 @@ export interface QuestionData {
   rubric: QuestionRubric
   pdfUrl?: string
   pdfName?: string
+  // --- 하이브리드 PDF 원문 제공 + 대학 고유 채점기준 지원 필드 ---
+  /** 문항 표시 모드: 'pdf'(문항별 PDF 뷰어) | 'text'(기존 텍스트 제시문) */
+  displayMode?: 'text' | 'pdf'
+  /** 문항별 문제지 PDF URL (개별 PDF 또는 통합 PDF URL) */
+  questionPdfUrl?: string
+  /** 문항별 문제지 PDF 원본 파일명 */
+  questionPdfName?: string
+  /** 통합 PDF 사용 시 해당 문항 시작 페이지 번호 (1부터 시작) */
+  questionPdfStartPage?: number
+  /** 대학 공식 채점기준·출제의도·등급표 원문 텍스트 (가공 없이 그대로 저장) */
+  rawRubricText?: string
+  /** 대학 공식 채점기준·해설 PDF URL */
+  rubricPdfUrl?: string
+  /** 대학 공식 채점기준·해설 PDF 원본 파일명 */
+  rubricPdfName?: string
+  /** 대학 고유 배점·등급 체계 설정 */
+  scoringSystem?: QuestionScoringSystem
 }
 
 export interface QuestionsMap {
@@ -65,13 +93,14 @@ export interface QuestionsMap {
 export function normalizeQuestionsData(rawQuestions: any, examMeta?: any): QuestionsMap {
   if (!rawQuestions) return getQuestionsData(examMeta?.id)
 
-  // 1. 이미 { q1: {...}, q2: {...} } 형태인 경우
-  if (rawQuestions.q1 && rawQuestions.q1.passages) {
+  // 1. 이미 { q1: {...}, q2: {...} } 형태인 경우 (텍스트 모드 및 PDF 모드 모두 지원)
+  if (rawQuestions.q1 && (rawQuestions.q1.passages || rawQuestions.q1.questionPdfUrl || rawQuestions.q1.displayMode === 'pdf')) {
     if (examMeta?.pdf_url !== undefined || examMeta?.pdfUrl !== undefined) {
       const pUrl = examMeta?.pdf_url ?? examMeta?.pdfUrl ?? ''
       const pName = examMeta?.pdf_name ?? examMeta?.pdfName ?? ''
       Object.keys(rawQuestions).forEach(k => {
         if (rawQuestions[k]) {
+          if (!Array.isArray(rawQuestions[k].passages)) rawQuestions[k].passages = []
           // DB 테이블 컬럼(exams.pdf_url)에 최신 PDF가 설정되어 있으면 최우선 동기화
           if (pUrl || !rawQuestions[k].pdfUrl) rawQuestions[k].pdfUrl = pUrl
           if (pName || !rawQuestions[k].pdfName) rawQuestions[k].pdfName = pName
@@ -189,7 +218,16 @@ export function normalizeQuestionsData(rawQuestions: any, examMeta?: any): Quest
           }
         })(),
         pdfUrl: examMeta?.pdf_url || examMeta?.pdfUrl || q.pdfUrl || q.pdf_url || '',
-        pdfName: examMeta?.pdf_name || examMeta?.pdfName || q.pdfName || q.pdf_name || ''
+        pdfName: examMeta?.pdf_name || examMeta?.pdfName || q.pdfName || q.pdf_name || '',
+        // 하이브리드 PDF 및 대학 고유 채점기준 필드 보존
+        displayMode: q.displayMode || (q.questionPdfUrl ? 'pdf' : 'text'),
+        questionPdfUrl: q.questionPdfUrl || '',
+        questionPdfName: q.questionPdfName || '',
+        questionPdfStartPage: q.questionPdfStartPage ? Number(q.questionPdfStartPage) : undefined,
+        rawRubricText: q.rawRubricText || '',
+        rubricPdfUrl: q.rubricPdfUrl || '',
+        rubricPdfName: q.rubricPdfName || '',
+        scoringSystem: q.scoringSystem || undefined,
       }
     })
     return map as QuestionsMap

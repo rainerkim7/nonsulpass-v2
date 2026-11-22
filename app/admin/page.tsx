@@ -23,11 +23,13 @@ import {
   Plus,
   Trash2,
   Lock,
-  X
+  X,
+  FileText
 } from 'lucide-react'
 
 // 하위 전용 매니저 컴포넌트 임포트
 import AllInOneParser from './components/AllInOneParser'
+import PdfExamUploader from './components/PdfExamUploader'
 import ExamsManager, { ExamItem } from './components/ExamsManager'
 import TrendsManager, { TrendRow } from './components/TrendsManager'
 import RubricsManager, { ScoringRuleRow, RubricRow } from './components/RubricsManager'
@@ -159,7 +161,7 @@ function AdminConsoleContent() {
   const [isCustomFaculty, setIsCustomFaculty] = useState<boolean>(false)
 
   // 2. 활성화된 관리자 탭 상태
-  const [activeAdminTab, setActiveAdminTab] = useState<'all-in-one' | 'exams' | 'trends' | 'rubrics'>('all-in-one')
+  const [activeAdminTab, setActiveAdminTab] = useState<'pdf-upload' | 'all-in-one' | 'exams' | 'trends' | 'rubrics'>('all-in-one')
 
   // 3. 탭별 데이터 상태
   // (1) 기출/모의 시험지 목록
@@ -649,6 +651,18 @@ function AdminConsoleContent() {
             <div className="admin-tab-bar" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               <button
                 type="button"
+                onClick={() => setActiveAdminTab('pdf-upload')}
+                className={`admin-tab-btn ${activeAdminTab === 'pdf-upload' ? 'active' : ''}`}
+                style={{
+                  color: activeAdminTab === 'pdf-upload' ? '#065f46' : '#059669',
+                  fontWeight: 800
+                }}
+              >
+                <FileText size={15} style={{ color: '#059669' }} />
+                📄 PDF 원문 간편 등록 (권장)
+              </button>
+              <button
+                type="button"
                 onClick={() => setActiveAdminTab('all-in-one')}
                 className={`admin-tab-btn ${activeAdminTab === 'all-in-one' ? 'active' : ''}`}
                 style={{
@@ -686,6 +700,18 @@ function AdminConsoleContent() {
             </div>
           </div>
         </section>
+
+        {/* ========================================================================= */}
+        {/* TAB 0: 📄 PDF 원문 간편 등록 (하이브리드 PDF + 대학 고유 채점기준) */}
+        {/* ========================================================================= */}
+        {activeAdminTab === 'pdf-upload' && (
+          <PdfExamUploader
+            selectedUniv={selectedUniv}
+            univName={currentUnivName}
+            onDataSaved={refreshAllData}
+            showNotice={showNotice}
+          />
+        )}
 
         {/* ========================================================================= */}
         {/* TAB 1: ⚡ 입학처 통합 보고서 올인원 추출기 (All-in-One Parser) */}

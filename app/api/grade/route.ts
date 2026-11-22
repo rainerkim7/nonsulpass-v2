@@ -1,7 +1,37 @@
 import { NextResponse } from 'next/server'
+import fs from 'fs'
+import path from 'path'
 import type { GradingReportData } from '@/types/grading'
 import { callUnifiedAi } from '@/lib/ai-gateway'
 import { supabase } from '@/lib/supabase'
+
+/**
+ * Supabase Storage 또는 로컬 public/ 경로의 PDF 파일을 base64로 로드하는 헬퍼 (멀티모달 AI 채점용)
+ */
+async function loadPdfAsBase64(pdfUrl: string): Promise<string | null> {
+  if (!pdfUrl || typeof pdfUrl !== 'string') return null
+  const cleanUrl = pdfUrl.split('#')[0].trim()
+  if (!cleanUrl) return null
+
+  try {
+    if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
+      const res = await fetch(cleanUrl)
+      if (!res.ok) return null
+      const buf = Buffer.from(await res.arrayBuffer())
+      return buf.toString('base64')
+    }
+    // 로컬 public/ 경로 폴백 지원
+    if (cleanUrl.startsWith('/')) {
+      const localPath = path.normalize(path.join(process.cwd(), 'public', decodeURIComponent(cleanUrl)))
+      if (fs.existsSync(localPath)) {
+        return fs.readFileSync(localPath).toString('base64')
+      }
+    }
+  } catch (err) {
+    console.warn('[GradeAPI] PDF 첨부 파일 로드 실패 (텍스트 기준 채점으로 계속 진행):', err)
+  }
+  return null
+}
 
 export async function POST(req: Request) {
   try {
@@ -15,6 +45,10 @@ export async function POST(req: Request) {
       passages = [],
       rubric = null,
       modelAnswer = '',
+      questionPdfUrl = '',
+      rawRubricText = '',
+      rubricPdfUrl = '',
+      scoringSystem = null,
       studentAnswer = '',
       studentName = '수험생',
       customSystemPrompt = '',
@@ -39,21 +73,66 @@ export async function POST(req: Request) {
           .join('\n\n')
       : ''
 
-    // 채점 기준표 텍스트 포맷팅
-    const rubricText = rubric ? JSON.stringify(rubric, null, 2) : '대학별 공식 채점 지침에 따름'
+    // 채점 기준표 텍스트 포맷팅 (대학 공식 원문 채점기준이 있으면 최우선 사용)
+    const rubricText =
+      typeof rawRubricText === 'string' && rawRubricText.trim()
+        ? rawRubricText.trim()
+        : rubric
+        ? JSON.stringify(rubric, null, 2)
+        : '대학별 공식 채점 지침에 따름'
+
+    // 멀티모달 PDF 첨부 파일 로드 (문제지 PDF + 채점기준·해설 PDF)
+    const inlineAttachments: Array<{ mimeType: string; data: string }> = []
+    if (questionPdfUrl) {
+      const qBase64 = await loadPdfAsBase64(questionPdfUrl)
+      if (qBase64) inlineAttachments.push({ mimeType: 'application/pdf', data: qBase64 })
+    }
+    if (rubricPdfUrl && rubricPdfUrl !== questionPdfUrl) {
+      const rBase64 = await loadPdfAsBase64(rubricPdfUrl)
+      if (rBase64) inlineAttachments.push({ mimeType: 'application/pdf', data: rBase64 })
+    }
+
+    // 대학 고유 채점 체계(점수제 / 등급제 / 병기) 동적 프롬프트 구성
+    const hasCustomScoring = Boolean(scoringSystem && typeof scoringSystem === 'object')
+    const nativeMaxScore = hasCustomScoring && Number(scoringSystem.maxScore) > 0 ? Number(scoringSystem.maxScore) : 100
+    const nativeScoringType: 'score' | 'grade' | 'both' =
+      hasCustomScoring && (scoringSystem.type === 'grade' || scoringSystem.type === 'both' || scoringSystem.type === 'score')
+        ? scoringSystem.type
+        : 'score'
+    const gradeScaleStr =
+      hasCustomScoring && Array.isArray(scoringSystem.gradeScale) && scoringSystem.gradeScale.length > 0
+        ? scoringSystem.gradeScale.join(', ')
+        : ''
+
+    const scoringScaleInstruction = hasCustomScoring
+      ? `2. **대학 고유 배점 및 등급 체계 엄수**:
+   - 이 문항의 대학 공식 원만점은 **${nativeMaxScore}점**입니다. "maxPossibleScore"는 반드시 ${nativeMaxScore}로 설정하고, "criteria" 배열의 각 평가 항목별 획득 점수("score") 합계가 "totalScore"(${nativeMaxScore}점 만점 기준)와 정확히 일치해야 합니다.
+   - "scoringType"은 "${nativeScoringType}"로 출력하십시오.
+   - ${
+     nativeScoringType !== 'score'
+       ? `대학 공식 등급 체계([${gradeScaleStr || 'A+, A, B+, B, C, D, F'}])에 따라 "officialGrade"에 정확한 공식 등급을 판정하고, "gradeRationale"에 등급 판정 근거를 1~2문장으로 명시하십시오.`
+       : '점수제 문항이므로 원배점 기준을 정확히 산출하십시오.'
+   }
+   - 대학 발표 논술 합격선(100점 기준)과 수험생이 직관적으로 비교할 수 있도록, "normalizedScore100"에 반드시 **100점 환산 참고점수(정수 0~100)**를 함께 산출하십시오. (예: ${nativeMaxScore}점 만점 중 ${Math.round(nativeMaxScore * 0.85)}점 획득 시 85점)`
+      : `2. **배점 합산 일치**: "criteria" 배열의 각 평가 항목별 획득 점수("score")의 합계가 "totalScore"와 반드시 정확히 일치해야 합니다. (총점 100점 만점 기준)`
+
+    const pdfInstructionNote =
+      inlineAttachments.length > 0
+        ? `\n※ [첨부 PDF 멀티모달 분석 지침]: 첨부된 PDF 파일에 실제 대학 문제지(발문·제시문·도표·그래프·수식) 및/또는 공식 채점기준·해설 원문이 포함되어 있습니다. 반드시 첨부 PDF 내의 도표·수치·제시문·채점기준을 직접 정밀 판독하여 채점하십시오.\n`
+        : ''
 
     // 프롬프트 작성: 모범답안의 후광 효과를 배제하고 채점 기준표의 배점과 세부 논거 충족 여부로만 엄격 채점하는 블라인드 채점 시스템
     const systemPrompt = `당신은 대한민국 명문 대학 인문/사회계열 논술 출제위원장이자 수석 채점위원입니다.
-제출된 답안을 아래의 [문제 발문], [제시문], [공식 채점 기준표]만을 엄격한 평가 잣대로 삼아 독립적이고 객관적인 블라인드 채점(Blind Grading)을 수행하십시오.
+제출된 답안을 아래의 [문제 발문], [제시문/첨부 PDF], [공식 채점 기준표]만을 엄격한 평가 잣대로 삼아 독립적이고 객관적인 블라인드 채점(Blind Grading)을 수행하십시오.${pdfInstructionNote}
 
 【블라인드 정밀 채점 원칙】
 1. **절대적 채점 기준표 기반 평가 (후광 효과 배제)**:
    - 제출된 답안이 모범답안이든 누구의 글이든 상관없이, 오직 [공식 채점 기준표]의 각 영역별 배점과 세부 필수 요구조건을 실제로 충족했는지만으로 점수를 평가하십시오.
    - 답안이 유려하더라도 채점 기준표에 명시된 필수 논점이나 상반된 두 입장의 구체적 논거(예: 재정확대를 통한 유효수요 창출 vs 샤워실의 바보 부작용 등)를 구체적으로 서술하지 않고 추상적으로 얼버무렸다면, 반드시 해당 영역에서 감점(부분 점수)을 엄격히 적용하십시오.
-   - 채점 기준표의 세부 논거를 100% 온전히 전개하지 못한 답안에 무비판적으로 100점 만점을 부여하는 것은 중대한 채점 오류입니다. (미흡한 영역이 있다면 80점대 등의 실질 점수를 부여할 것)
-2. **배점 합산 일치**: "criteria" 배열의 각 평가 항목별 획득 점수("score")의 합계가 "totalScore"와 반드시 정확히 일치해야 합니다. (총점 100점 만점 기준)
+   - 채점 기준표의 세부 논거를 100% 온전히 전개하지 못한 답안에 무비판적으로 만점을 부여하는 것은 중대한 채점 오류입니다.
+${scoringScaleInstruction}
 3. **실질적 감점 요인 명시**: "deductions" 항목에는 채점 기준표 대비 실제 누락되거나 축약된 논점, 논리적 비약 등 구체적인 감점 사유와 감점 점수(음수)를 사실대로 기재하십시오.
-4. **개념어 적중 및 분량**: 규정 분량(800±100자 등) 준수 여부 및 채점 기준의 핵심 개념어 도출 여부를 엄밀히 평가하십시오.
+4. **개념어 적중 및 분량**: 규정 분량(${charLimit}) 준수 여부 및 채점 기준의 핵심 개념어 도출 여부를 엄밀히 평가하십시오.
 
 반드시 다음 JSON 규격에 맞추어 한국어로만 응답하십시오. (Markdown 코드블록 없이 순수 JSON만 출력)
 
@@ -61,9 +140,13 @@ export async function POST(req: Request) {
   "examTitle": "${university} ${examTitle} ${questionLabel} 정밀 채점 리포트",
   "questionLabel": "${questionLabel}",
   "studentName": "${studentName}",
-  "totalScore": 0, // criteria의 모든 항목 점수(score)를 합산한 100점 만점 기준 실제 채점 총점 (정수 숫자)
-  "maxPossibleScore": 100,
-  "cutlineScore": 82, // 해당 대학 학과의 예상 합격 커트라인 점수 (정수 숫자, 통상 80~85점)
+  "totalScore": 0, // criteria의 모든 항목 점수(score)를 합산한 실제 채점 총점 (정수 숫자, ${nativeMaxScore}점 만점 기준)
+  "maxPossibleScore": ${nativeMaxScore},
+  "scoringType": "${nativeScoringType}",
+  "officialGrade": ${nativeScoringType !== 'score' ? '"A"' : 'null'}, // 등급제/병기 문항의 경우 대학 공식 등급 (예: "A+", "S", "B+"), 점수제 전용이면 null
+  "gradeRationale": ${nativeScoringType !== 'score' ? '"등급 판정 핵심 근거 1~2문장"' : 'null'},
+  "normalizedScore100": 0, // 대학 발표 합격선(100점 기준) 비교용 100점 환산 참고점수 (정수 0~100)
+  "cutlineScore": 82, // 해당 대학 학과의 예상 합격 커트라인 점수 (100점 환산 기준 정수, 통상 80~85점)
   "statusVerdict": "합격 가능권", // "합격 안정권" (합격선 이상), "합격 가능권" (합격선 -5점 이내), "도전 권장" (합격선 -6점 이하) 중 택1
   "charCount": ${rawCharCount},
   "charStatus": "통과 · 감점 0점", // 규격 준수 여부 및 감점 명시 (예: "통과 · 감점 0점", "분량 미달(620자) · 감점 -5점")
@@ -162,6 +245,7 @@ ${modelAnswer || '제시문과 발문의 논리적 일치 여부로 판단'}
       maxOutputTokens: 16384,
       jsonMode: true,
       signal: req.signal,
+      inlineAttachments: inlineAttachments.length > 0 ? inlineAttachments : undefined,
     })
 
     // 마크다운 백틱 등이 포함되어 있을 경우 정제

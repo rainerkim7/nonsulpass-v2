@@ -136,7 +136,95 @@ export function RubricModal({ isOpen, onClose, currentUniv, currentQ }: RubricMo
           </div>
 
           <div className="rubric-table-wrap">
-            {!currentQ.rubric.items || currentQ.rubric.items.length === 0 ? (
+            {/* 하이브리드 PDF/원문 채점기준이 등록된 경우 대학 공식 원문 그대로 표시 */}
+            {(currentQ.rawRubricText || currentQ.rubricPdfUrl) ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', margin: '8px 0' }}>
+                {currentQ.scoringSystem && (
+                  <div
+                    style={{
+                      padding: '10px 14px',
+                      borderRadius: '10px',
+                      backgroundColor: '#eff6ff',
+                      border: '1px solid #bfdbfe',
+                      fontSize: '12.5px',
+                      color: '#1e3a8a',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: '12px',
+                    }}
+                  >
+                    <span>
+                      <strong>채점 체계:</strong>{' '}
+                      {currentQ.scoringSystem.type === 'grade'
+                        ? '대학 공식 등급제 (+ 100점 환산 참고점수)'
+                        : currentQ.scoringSystem.type === 'both'
+                        ? '대학 공식 등급 + 원배점 병기'
+                        : '대학 공식 원배점 점수제'}
+                    </span>
+                    <span>
+                      <strong>문항 원만점:</strong> {currentQ.scoringSystem.maxScore}점
+                    </span>
+                    {currentQ.scoringSystem.gradeScale && currentQ.scoringSystem.gradeScale.length > 0 && (
+                      <span>
+                        <strong>등급표:</strong> {currentQ.scoringSystem.gradeScale.join(' · ')}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {currentQ.rawRubricText && (
+                  <div
+                    style={{
+                      padding: '16px 18px',
+                      borderRadius: '10px',
+                      backgroundColor: '#f8fafc',
+                      border: '1px solid #e2e8f0',
+                      fontSize: '13.5px',
+                      lineHeight: 1.75,
+                      color: '#1e293b',
+                      whiteSpace: 'pre-wrap',
+                      maxHeight: '360px',
+                      overflowY: 'auto',
+                    }}
+                  >
+                    {currentQ.rawRubricText}
+                  </div>
+                )}
+
+                {currentQ.rubricPdfUrl && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <span style={{ fontSize: '12.5px', fontWeight: 700, color: '#334155' }}>
+                        📄 대학 공식 채점기준·해설 PDF ({currentQ.rubricPdfName || '공식 해설'})
+                      </span>
+                      <a
+                        href={currentQ.rubricPdfUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          color: '#2563eb',
+                          textDecoration: 'underline',
+                        }}
+                      >
+                        새 창에서 크게 보기 ↗
+                      </a>
+                    </div>
+                    <iframe
+                      src={`${currentQ.rubricPdfUrl}#toolbar=0&navpanes=0&view=FitH`}
+                      title="대학 공식 채점기준 PDF"
+                      style={{
+                        width: '100%',
+                        height: '420px',
+                        borderRadius: '10px',
+                        border: '1px solid #cbd5e1',
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : !currentQ.rubric.items || currentQ.rubric.items.length === 0 ? (
               <div
                 style={{
                   padding: '28px 20px',

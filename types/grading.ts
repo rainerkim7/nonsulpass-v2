@@ -18,10 +18,15 @@ export interface GradingReportData {
   examTitle: string       // 시험명 (예: '2026학년도 홍익대학교 인문계열 (서울 오전) 문제 1')
   questionLabel: string   // 문항 라벨 (예: '문제 1 (집중과 분산)')
   studentName?: string    // 학생명
-  totalScore: number      // 총점 (100점 만점 환산 또는 문항 배점 기준)
-  maxPossibleScore: number// 문항 만점 (예: 100점 또는 60점)
-  cutlineScore: number    // 예상 합격선 (예: 82)
-  statusVerdict: string   // '합격 유력' | '합격 가능권' | '도전 권장'
+  totalScore: number      // 총점 (대학 고유 원배점 기준 또는 100점 만점 기준)
+  maxPossibleScore: number// 문항 원만점 (예: 30, 40, 50, 100)
+  cutlineScore: number    // 예상 합격선 (예: 82 또는 원배점 기준 합격선)
+  statusVerdict: string   // '합격 안정권' | '합격 가능권' | '도전 권장'
+  // 대학 고유 채점 체계 지원 필드 (등급제 / 원배점 + 100점 환산 참고점수 병기)
+  scoringType?: 'score' | 'grade' | 'both' // 점수제 | 등급제 | 등급+점수 병기
+  officialGrade?: string  // 대학 공식 등급 (예: 'A+', 'A', 'S', '상')
+  gradeRationale?: string // 공식 등급 판정 근거 1~2줄 요약
+  normalizedScore100?: number // 대학 발표 합격선(100점 기준) 비교용 100점 환산 참고점수
   charCount: number       // 실제 작성 글자 수
   charStatus: string      // '통과 · 감점 0점' | '분량 미달 · 감점 적용'
   conceptHits: {

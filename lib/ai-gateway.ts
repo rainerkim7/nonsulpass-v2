@@ -25,6 +25,8 @@ export interface UnifiedAiCallOptions {
   jsonMode?: boolean
   /** 클라이언트 요청 중단 시 하위 AI 호출 및 타 제공사 폴백을 즉시 차단하기 위한 AbortSignal */
   signal?: AbortSignal
+  /** 멀티모달 인라인 첨부 파일 (문제지 PDF, 채점기준 해설 PDF 등) */
+  inlineAttachments?: Array<{ mimeType: string; data: string }>
 }
 
 export interface UnifiedAiCallResult {
@@ -37,7 +39,19 @@ export interface UnifiedAiCallResult {
  */
 export async function callUnifiedAi(options: UnifiedAiCallOptions): Promise<UnifiedAiCallResult> {
   const model = (options.model || 'gemini-3.1-pro-preview').trim().toLowerCase()
-  const isOpenAiModel = model.startsWith('gpt-') || model.startsWith('o3') || model.startsWith('chatgpt-')
+  const hasAttachments = Array.isArray(options.inlineAttachments) && options.inlineAttachments.length > 0
+  // PDF 등 멀티모달 첨부 파일이 있는 경우 네이티브 PDF 인식이 가능한 Gemini 라인업으로 직접 라우팅
+  const isOpenAiModel = !hasAttachments && (model.startsWith('gpt-') || model.startsWith('o3') || model.startsWith('chatgpt-'))
+
+  const buildGeminiParts = (promptText: string): Array<Record<string, any>> => {
+    const attachmentParts = (options.inlineAttachments || []).map((att) => ({
+      inlineData: {
+        mimeType: att.mimeType,
+        data: att.data,
+      },
+    }))
+    return [...attachmentParts, { text: promptText }]
+  }
 
   if (isOpenAiModel) {
     try {
@@ -83,10 +97,17 @@ export async function callUnifiedAi(options: UnifiedAiCallOptions): Promise<Unif
       ? `${options.systemPrompt}\n\n${options.userPrompt}`
       : options.userPrompt
 
-    const requestedModels = Array.from(new Set([options.model || 'gemini-3.1-pro-preview', ...PAID_PRO_GEMINI_MODELS]))
+    const requestedModels = Array.from(
+      new Set([
+        isOpenAiModel || !options.model || options.model.startsWith('gpt-')
+          ? 'gemini-3.1-pro-preview'
+          : options.model,
+        ...PAID_PRO_GEMINI_MODELS,
+      ])
+    )
 
     const geminiResult = await callGeminiWithFallback({
-      parts: [{ text: geminiPrompt }],
+      parts: buildGeminiParts(geminiPrompt),
       temperature: options.temperature ?? 0.2,
       maxOutputTokens: options.maxOutputTokens ?? 16384,
       responseMimeType: options.jsonMode !== false ? 'application/json' : 'text/plain',
@@ -99,8 +120,8 @@ export async function callUnifiedAi(options: UnifiedAiCallOptions): Promise<Unif
       modelUsed: geminiResult.modelUsed,
     }
   } catch (geminiErr: any) {
-    // 사용자가 중단한 경우 타 제공사(OpenAI)로의 불필요한 폴백 과금을 즉시 차단
-    if (options.signal?.aborted || geminiErr?.name === 'AbortError') {
+    // 사용자가 중단한 경우 또는 PDF 멀티모달 첨부가 있는 경우 OpenAI 텍스트 폴백 차단
+    if (options.signal?.aborted || geminiErr?.name === 'AbortError' || hasAttachments) {
       throw geminiErr
     }
     console.warn('[UnifiedAI] Gemini 호출 실패, OpenAI ChatGPT 라인업으로 비상 폴백 시도:', geminiErr.message)

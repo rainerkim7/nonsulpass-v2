@@ -19,11 +19,7 @@ import {
   X,
   Sparkles,
   BookOpen,
-  Edit3,
-  Save,
-  Trash2,
   CheckCircle2,
-  FileUp,
   Coins,
   Terminal,
   Camera
@@ -36,13 +32,13 @@ import { getQuestionsData, fetchExamQuestionsFromDb, QuestionsMap } from '@/lib/
 import type { GradingReportData } from '@/types/grading'
 import ManuscriptModal from './ManuscriptModal'
 import HandwritingOcrModal from './HandwritingOcrModal'
-import ExamInlineEditor from './admin/ExamInlineEditor'
 import PromptInspectorModal from './PromptInspectorModal'
 import PassPurchaseModal from '@/components/payment/PassPurchaseModal'
 import { useUserPass } from '@/lib/use-user-pass'
 import { renderFormattedParagraph } from './PassageContentRenderer'
 import SubmissionHistorySection, { type SubmissionHistoryItem } from './SubmissionHistorySection'
 import { ModelAnswerModal, RubricModal, GradingLoadingOverlay } from './ExamReferenceModals'
+import CleanPdfViewer from './CleanPdfViewer'
 
 interface ExamWorkspaceProps {
   selectedUniv?: string
@@ -78,22 +74,6 @@ export default function ExamWorkspace({
     openPurchaseModal,
     closePurchaseModal,
   } = useUserPass(currentUniv)
-
-  // 관리자 전용 인라인 문제 편집 모드 활성화 상태
-  const [isEditMode, setIsEditMode] = useState<boolean>(false)
-  // 문항 데이터 DB 저장 진행 상태
-  const [isSavingExam, setIsSavingExam] = useState<boolean>(false)
-  // 특정 제시문 도표 이미지 업로드 진행 상태 (제시문 인덱스)
-  const [, setUploadingPassageIdx] = useState<number | null>(null)
-  // 관리자 전용 상단 알림 배너
-  const [adminNotice, setAdminNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
-  // 파일 선택 창 참조
-  const imageInputRef = useRef<HTMLInputElement | null>(null)
-  // 문제지 원본 PDF 상태 및 전용 업로더 참조
-  const [pdfUrl, setPdfUrl] = useState<string>('')
-  const [pdfName, setPdfName] = useState<string>('')
-  const [isUploadingPdf, setIsUploadingPdf] = useState<boolean>(false)
-  const pdfInputRef = useRef<HTMLInputElement | null>(null)
 
   // 문제 탭 전환 상태 (q1, q2, q3 등 동적 지원)
   const [activeQuestion, setActiveQuestion] = useState<string>(initialQuestion || 'q1')
@@ -209,454 +189,27 @@ export default function ExamWorkspace({
     }
   }
 
-  // 관리자 토스트 알림 표시
-  const triggerAdminNotice = (type: 'success' | 'error', message: string) => {
-    setAdminNotice({ type, message })
-    setTimeout(() => {
-      setAdminNotice(null)
-    }, 4000)
-  }
-
-  // 발문 제목 변경 핸들러
-  const handleUpdateTitle = (val: string) => {
-    setQuestionsData(prev => ({
-      ...prev,
-      [activeQuestion]: {
-        ...prev[activeQuestion],
-        title: val
-      }
-    }))
-  }
-
-  // 발문 유의사항/지시문 변경 핸들러
-  const handleUpdateNote = (val: string) => {
-    setQuestionsData(prev => ({
-      ...prev,
-      [activeQuestion]: {
-        ...prev[activeQuestion],
-        note: val
-      }
-    }))
-  }
-
-  // 제시문 뱃지명 변경 핸들러 (예: [제시문 가])
-  const handleUpdatePassageBadge = (pIdx: number, val: string) => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = [...q.passages]
-      if (newPassages[pIdx]) {
-        newPassages[pIdx] = { ...newPassages[pIdx], badge: val }
-      }
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 제시문 단락(paragraph) 텍스트 변경 핸들러
-  const handleUpdateParagraph = (pIdx: number, paraIdx: number, val: string) => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = [...q.passages]
-      if (newPassages[pIdx]) {
-        const newParas = [...newPassages[pIdx].paragraphs]
-        newParas[paraIdx] = val
-        newPassages[pIdx] = { ...newPassages[pIdx], paragraphs: newParas }
-      }
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 제시문에 새 본문 단락 추가 핸들러
-  const handleAddParagraph = (pIdx: number) => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = [...q.passages]
-      if (newPassages[pIdx]) {
-        const newParas = [...newPassages[pIdx].paragraphs, '']
-        newPassages[pIdx] = { ...newPassages[pIdx], paragraphs: newParas }
-      }
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 제시문 단락 삭제 핸들러
-  const handleDeleteParagraph = (pIdx: number, paraIdx: number) => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = [...q.passages]
-      if (newPassages[pIdx]) {
-        const newParas = newPassages[pIdx].paragraphs.filter((_, idx) => idx !== paraIdx)
-        newPassages[pIdx] = { ...newPassages[pIdx], paragraphs: newParas }
-      }
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 새 제시문([라], [마] 등) 추가 핸들러
-  const handleAddPassage = () => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const hangulLabels = ['가', '나', '다', '라', '마', '바', '사', '아', '자', '차']
-      const nextBadge = `[제시문 ${hangulLabels[q.passages.length] || q.passages.length + 1}]`
-      const newPassages = [...q.passages, { badge: nextBadge, paragraphs: ['새 제시문 내용을 입력하세요.'] }]
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 제시문 전체 삭제 핸들러
-  const handleDeletePassage = (pIdx: number) => {
-    if (!confirm('해당 제시문을 삭제하시겠습니까?')) return
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = q.passages.filter((_, idx) => idx !== pIdx)
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 도표/그래프 이미지 업로드 대상 위치 (발문 상단/하단 또는 제시문 상단/하단)
-  type UploadTarget =
-    | { type: 'prompt'; position: 'top' | 'bottom' }
-    | { type: 'passage'; pIdx: number; position: 'top' | 'bottom' }
-
-  const uploadTargetRef = useRef<UploadTarget | null>(null)
-  const [isUploadingImage, setIsUploadingImage] = useState<boolean>(false)
-
-  // 도표/그래프 이미지 파일 선택 창 호출 (발문용)
-  const handleTriggerPromptUpload = (position: 'top' | 'bottom') => {
-    uploadTargetRef.current = { type: 'prompt', position }
-    if (imageInputRef.current) {
-      imageInputRef.current.value = ''
-      imageInputRef.current.click()
-    }
-  }
-
-  // 도표/그래프 이미지 파일 선택 창 호출 (제시문용)
-  const handleTriggerPassageUpload = (pIdx: number, position: 'top' | 'bottom') => {
-    uploadTargetRef.current = { type: 'passage', pIdx, position }
-    if (imageInputRef.current) {
-      imageInputRef.current.value = ''
-      imageInputRef.current.click()
-    }
-  }
-
-  // 단락 한 칸 위로 이동 핸들러
-  const handleMoveParagraphUp = (pIdx: number, paraIdx: number) => {
-    if (paraIdx <= 0) return
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = [...q.passages]
-      if (newPassages[pIdx]) {
-        const newParas = [...newPassages[pIdx].paragraphs]
-        const temp = newParas[paraIdx - 1]
-        newParas[paraIdx - 1] = newParas[paraIdx]
-        newParas[paraIdx] = temp
-        newPassages[pIdx] = { ...newPassages[pIdx], paragraphs: newParas }
-      }
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 단락 한 칸 아래로 이동 핸들러
-  const handleMoveParagraphDown = (pIdx: number, paraIdx: number) => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const newPassages = [...q.passages]
-      if (newPassages[pIdx]) {
-        const newParas = [...newPassages[pIdx].paragraphs]
-        if (paraIdx >= newParas.length - 1) return prev
-        const temp = newParas[paraIdx + 1]
-        newParas[paraIdx + 1] = newParas[paraIdx]
-        newParas[paraIdx] = temp
-        newPassages[pIdx] = { ...newPassages[pIdx], paragraphs: newParas }
-      }
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, passages: newPassages }
-      }
-    })
-  }
-
-  // 발문에 첨부된 도표 이미지 삭제 핸들러
-  const handleRemovePromptImage = (targetMarkdown: string) => {
-    setQuestionsData(prev => {
-      const q = prev[activeQuestion]
-      if (!q) return prev
-      const currentNote = q.note || ''
-      const updatedNote = currentNote.replace(targetMarkdown, '').replace(/\n\s*\n\s*\n/g, '\n\n').trim()
-      return {
-        ...prev,
-        [activeQuestion]: { ...q, note: updatedNote }
-      }
-    })
-    triggerAdminNotice('success', '문제 발문에서 도표 이미지가 제거되었습니다.')
-  }
-
-  // 도표/그래프 파일 업로드 및 선택된 위치(문제 위/아래, 제시문 상단/하단)에 자동 삽입
-  const handleImageFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    const target = uploadTargetRef.current
-    if (!file || !target) return
-
-    setIsUploadingImage(true)
-    if (target.type === 'passage') {
-      setUploadingPassageIdx(target.pIdx)
-    }
-
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('univId', selectedUniv || 'common')
-
-      const res = await fetch('/api/admin/upload-exam-image', {
-        method: 'POST',
-        body: formData
-      })
-      const result = await res.json()
-
-      if (!res.ok || !result.success) {
-        throw new Error(result.error || '이미지 업로드에 실패했습니다.')
-      }
-
-      // 업로드된 이미지 URL을 마크다운 문법(![alt](url))으로 변환
-      const cleanAlt = file.name.replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_\-\uAC00-\uD7A3]/g, ' ').trim() || '도표 및 그래프'
-      const markdownImage = `![${cleanAlt}](${result.url})`
-
-      if (target.type === 'prompt') {
-        // 1. 발문(문제)에 도표 첨부 (문제 위 또는 문제 아래)
-        setQuestionsData(prev => {
-          const q = prev[activeQuestion]
-          if (!q) return prev
-          const currentNote = q.note || ''
-          const updatedNote = target.position === 'top'
-            ? (currentNote ? `${markdownImage}\n\n${currentNote}` : markdownImage)
-            : (currentNote ? `${currentNote}\n\n${markdownImage}` : markdownImage)
-          return {
-            ...prev,
-            [activeQuestion]: { ...q, note: updatedNote }
-          }
-        })
-        triggerAdminNotice('success', `도표("${file.name}")가 문제 ${target.position === 'top' ? '위(상단)' : '아래(하단)'}에 성공적으로 첨부되었습니다.`)
-      } else if (target.type === 'passage') {
-        // 2. 제시문에 도표 첨부 (제시문 맨 위 또는 맨 아래)
-        const pIdx = target.pIdx
-        setQuestionsData(prev => {
-          const q = prev[activeQuestion]
-          if (!q) return prev
-          const newPassages = [...q.passages]
-          if (newPassages[pIdx]) {
-            const newParas = target.position === 'top'
-              ? [markdownImage, ...newPassages[pIdx].paragraphs]
-              : [...newPassages[pIdx].paragraphs, markdownImage]
-            newPassages[pIdx] = { ...newPassages[pIdx], paragraphs: newParas }
-          }
-          return {
-            ...prev,
-            [activeQuestion]: { ...q, passages: newPassages }
-          }
-        })
-        triggerAdminNotice('success', `도표("${file.name}")가 제시문 ${target.position === 'top' ? '상단(맨 위)' : '하단(맨 아래)'}에 성공적으로 첨부되었습니다.`)
-      }
-    } catch (err: any) {
-      console.error('도표 이미지 업로드 오류:', err)
-      triggerAdminNotice('error', err.message || '도표 이미지 업로드 실패')
-    } finally {
-      setIsUploadingImage(false)
-      setUploadingPassageIdx(null)
-      uploadTargetRef.current = null
-    }
-  }
-
-  // 수정한 문항 및 제시문 전체 데이터를 Supabase DB에 저장
-  const handleSaveExamQuestions = async () => {
-    if (!selectedExamId) {
-      alert('선택된 시험 식별자(ID)가 없습니다.')
-      return
-    }
-
-    setIsSavingExam(true)
-    try {
-      const payload: any = {
-        id: selectedExamId,
-        questions: questionsData
-      }
-      if (pdfUrl !== undefined) {
-        payload.pdf_url = pdfUrl
-        payload.pdf_name = pdfName
-      }
-
-      const res = await fetch('/api/admin/exams', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      const result = await res.json()
-
-      if (!res.ok || !result.success) {
-        throw new Error(result.error || '문항 데이터 저장에 실패했습니다.')
-      }
-
-      triggerAdminNotice('success', '문제, 제시문 및 원본 PDF 설정이 Supabase DB에 성공적으로 저장되었습니다!')
-    } catch (err: any) {
-      console.error('문항 데이터 저장 오류:', err)
-      triggerAdminNotice('error', err.message || '문항 데이터 저장 실패')
-    } finally {
-      setIsSavingExam(false)
-    }
-  }
-
-  // 문제지 원본 PDF 업로드/교체용 파일 선택 창 열기
-  const handleTriggerPdfUpload = () => {
-    if (pdfInputRef.current) {
-      pdfInputRef.current.value = ''
-      pdfInputRef.current.click()
-    }
-  }
-
-  // 문제지 원본 PDF 파일 업로드 및 로컬 상태 설정 ([DB에 저장] 시 최종 반영)
-  const handlePdfFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-
-    setIsUploadingPdf(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('univId', selectedUniv || 'common')
-
-      const res = await fetch('/api/admin/upload-exam-pdf', {
-        method: 'POST',
-        body: formData
-      })
-      const result = await res.json()
-
-      if (!res.ok || !result.success) {
-        throw new Error(result.error || 'PDF 파일 업로드에 실패했습니다.')
-      }
-
-      // 이전 등록된 PDF 파일 경로 보관 (새 파일 등록 후 이전 파일 정리용)
-      const oldPdfUrl = pdfUrl || (activeQuestion && questionsData[activeQuestion]?.pdfUrl) || ''
-
-      // 로컬 PDF 상태 갱신 (저장 대기)
-      setPdfUrl(result.url)
-      setPdfName(file.name)
-
-      // questionsData 내의 모든 문항에도 pdfUrl/pdfName 실시간 동기화
-      setQuestionsData(prev => {
-        const next: any = { ...prev }
-        Object.keys(next).forEach(k => {
-          if (next[k]) {
-            next[k] = { ...next[k], pdfUrl: result.url, pdfName: file.name }
-          }
-        })
-        return next
-      })
-
-      // 이전 파일이 로컬 디스크 또는 Supabase Storage 파일인 경우 정리
-      if (
-        oldPdfUrl &&
-        oldPdfUrl !== result.url &&
-        (oldPdfUrl.startsWith('/exams/pdf/') || oldPdfUrl.includes('/exam-assets/'))
-      ) {
-        try {
-          await fetch('/api/admin/upload-exam-pdf', {
-            method: 'DELETE',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ fileUrl: oldPdfUrl })
-          })
-        } catch (cleanupErr) {
-          console.warn('이전 PDF 스토리지 정리 실패 (무시):', cleanupErr)
-        }
-      }
-
-      triggerAdminNotice('success', `새 원본 PDF("${file.name}")가 설정되었습니다. [DB에 저장] 버튼을 클릭해 최종 반영하세요!`)
-    } catch (err: any) {
-      console.error('PDF 업로드 오류:', err)
-      triggerAdminNotice('error', err.message || 'PDF 업로드 실패')
-    } finally {
-      setIsUploadingPdf(false)
-    }
-  }
-
-  // 등록된 문제지 원본 PDF 삭제
-  const handleRemovePdf = async () => {
-    if (!confirm('등록된 문제지 원본 PDF를 삭제하시겠습니까?')) return
-
-    const prevPdfUrl = pdfUrl || (activeQuestion && questionsData[activeQuestion]?.pdfUrl) || ''
-
-    setPdfUrl('')
-    setPdfName('')
-
-    setQuestionsData(prev => {
-      const next: any = { ...prev }
-      Object.keys(next).forEach(k => {
-        if (next[k]) {
-          next[k] = { ...next[k], pdfUrl: '', pdfName: '' }
-        }
-      })
-      return next
-    })
-
-    if (selectedExamId) {
-      await fetch('/api/admin/exams', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: selectedExamId,
-          pdf_url: '',
-          pdf_name: ''
-        })
-      })
-    }
-
-    // 서버 디스크 또는 Supabase Storage에서 실제 PDF 파일 삭제 및 정리
-    if (prevPdfUrl && (prevPdfUrl.startsWith('/exams/pdf/') || prevPdfUrl.includes('/exam-assets/'))) {
-      try {
-        await fetch('/api/admin/upload-exam-pdf', {
-          method: 'DELETE',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ fileUrl: prevPdfUrl })
-        })
-      } catch (cleanupErr) {
-        console.warn('스토리지 PDF 파일 삭제 실패 (무시):', cleanupErr)
-      }
-    }
-
-    triggerAdminNotice('success', '문제지 원본 PDF가 성공적으로 삭제되었습니다.')
-  }
-
   // Gemini AI 정밀 채점 로딩 및 중단 컨트롤러 상태
   const [isGrading, setIsGrading] = useState(false)
   const [gradingStep, setGradingStep] = useState(1)
   const [gradingNotice, setGradingNotice] = useState<string | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
+
+  // 하이브리드 PDF 문제지 배율 상태 (기본값 130%, 가로맞춤 기준 110%, 50~250% 5% 단위 조절)
+  const PDF_ZOOM_MIN = 50
+  const PDF_ZOOM_MAX = 250
+  const PDF_ZOOM_STEP = 5
+  const PDF_ZOOM_BASE = 110
+  const PDF_ZOOM_DEFAULT = 130
+  const [pdfZoom, setPdfZoom] = useState<number>(PDF_ZOOM_DEFAULT)
+
+  const handleZoomOutPdf = () => {
+    setPdfZoom((prev) => Math.max(PDF_ZOOM_MIN, prev - PDF_ZOOM_STEP))
+  }
+
+  const handleZoomInPdf = () => {
+    setPdfZoom((prev) => Math.min(PDF_ZOOM_MAX, prev + PDF_ZOOM_STEP))
+  }
 
   // 1. 초기 렌더링: 로컬 프리셋으로 즉시 렌더링 (블랭크 화면 방지)
   const [questionsData, setQuestionsData] = useState<QuestionsMap>(() => getQuestionsData(selectedExamId))
@@ -668,11 +221,6 @@ export default function ExamWorkspace({
       fetchExamQuestionsFromDb(selectedExamId).then((dbData) => {
         if (isMounted && dbData) {
           setQuestionsData(dbData)
-          // DB에서 등록된 PDF 정보 탐색 후 동기화
-          const foundPdf = Object.values(dbData).find(q => q?.pdfUrl)?.pdfUrl
-          const foundName = Object.values(dbData).find(q => q?.pdfName)?.pdfName
-          if (foundPdf) setPdfUrl(foundPdf)
-          if (foundName) setPdfName(foundName || '')
         }
       })
     }
@@ -682,9 +230,6 @@ export default function ExamWorkspace({
   }, [selectedExamId])
 
   const currentQ = questionsData[activeQuestion] || questionsData.q1
-  // 현재 문항 또는 전체 시험 데이터에서 첨부된 원본 PDF 경로 탐색 (로컬 pdfUrl 우선)
-  const currentPdfUrl = pdfUrl || currentQ?.pdfUrl || Object.values(questionsData).find(q => q?.pdfUrl)?.pdfUrl || ''
-  const currentPdfName = pdfName || currentQ?.pdfName || Object.values(questionsData).find(q => q?.pdfName)?.pdfName || ''
   const currentAnswer = answers[activeQuestion] || ''
 
   // 현재 문항의 이전 제출 및 첨삭 이력 조회 핸들러
@@ -722,46 +267,6 @@ export default function ExamWorkspace({
   useEffect(() => {
     fetchSubmissionHistory()
   }, [user, selectedExamId, activeQuestion, currentQuestionLabel])
-
-  // 문제지 원본 PDF를 화면 왼쪽에 100% 높이의 독립 창으로 열람 (사용자가 크기 및 위치 자유 조절 가능)
-  const handleOpenPdfWindow = () => {
-    if (!currentPdfUrl) {
-      alert('등록된 문제지 원본 PDF가 없습니다.\n관리자 모드의 [올인원 추출기] 또는 [새 기출·모의 등록]에서 문제지 PDF를 첨부해 주세요.')
-      return
-    }
-
-    // 1. 현재 사용자 모니터의 사용 가능한 해상도 기반으로 좌측 분할(너비 50%) 및 높이 100% 계산
-    const screenWidth = typeof window !== 'undefined' ? (window.screen?.availWidth || 1600) : 1600
-    const screenHeight = typeof window !== 'undefined' ? (window.screen?.availHeight || 900) : 900
-    const popupWidth = Math.floor(screenWidth * 0.5)
-    const popupHeight = screenHeight
-    const popupLeft = 0
-    const popupTop = 0
-
-    // 2. 크기 및 위치 조정이 가능한(resizable=yes) 독립 브라우저 팝업 창 옵션 구성
-    const windowFeatures = [
-      `width=${popupWidth}`,
-      `height=${popupHeight}`,
-      `left=${popupLeft}`,
-      `top=${popupTop}`,
-      'resizable=yes',
-      'scrollbars=yes',
-      'status=no',
-      'toolbar=no',
-      'menubar=no'
-    ].join(',')
-
-    // PDF 표준 파라미터:
-    // #navpanes=0 : 좌측 썸네일/목차 탐색 패널 닫기 (문제 본문만 스크롤)
-    // #pagemode=none : 썸네일 모드 해제
-    // #view=FitH : 문서 가로폭 맞춤
-    const pdfUrlWithParams = `${currentPdfUrl}#navpanes=0&pagemode=none&view=FitH`
-
-    const pdfWindow = window.open(pdfUrlWithParams, 'ExamPdfViewerPopup', windowFeatures)
-    if (pdfWindow) {
-      pdfWindow.focus()
-    }
-  }
 
   // 사용자(user), 문항(activeQuestion), 시험(selectedExamId) 전환 시 localStorage 임시 답안 및 활성 회차 복원
   // (로그아웃하거나 다른 사용자로 로그인 시 이전 사용자의 답안과 이력이 즉시 초기화/분리됨)
@@ -925,6 +430,10 @@ export default function ExamWorkspace({
           passages: currentQ.passages,
           rubric: currentQ.rubric,
           modelAnswer: currentQ.modelAnswer,
+          questionPdfUrl: currentQ.questionPdfUrl || '',
+          rawRubricText: currentQ.rawRubricText || '',
+          rubricPdfUrl: currentQ.rubricPdfUrl || '',
+          scoringSystem: currentQ.scoringSystem || null,
           studentAnswer: currentAnswer,
           studentName: '관리자(시뮬레이션)',
           customSystemPrompt: customSysPrompt,
@@ -1066,6 +575,10 @@ export default function ExamWorkspace({
           passages: currentQ.passages,
           rubric: currentQ.rubric,
           modelAnswer: currentQ.modelAnswer,
+          questionPdfUrl: currentQ.questionPdfUrl || '',
+          rawRubricText: currentQ.rawRubricText || '',
+          rubricPdfUrl: currentQ.rubricPdfUrl || '',
+          scoringSystem: currentQ.scoringSystem || null,
           studentAnswer: currentAnswer,
           studentName: '수험생',
         }),
@@ -1226,7 +739,7 @@ export default function ExamWorkspace({
         </div>
       </div>
 
-      <div className="workspace">
+      <div className={currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl ? 'workspace pdf-mode' : 'workspace'}>
         <section className="reading-panel">
           <div className="panel-heading">
             <div>
@@ -1259,207 +772,148 @@ export default function ExamWorkspace({
                   )
                 })}
             </div>
-            {/* 상단 우측 액션: 원본 PDF 버튼 및 관리자 전용 인라인 편집 툴바 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
-              {/* 원본 PDF 버튼:
-                  - 편집모드 OFF: 기존처럼 새 창으로 PDF 열람
-                  - 편집모드 ON: 클릭 시 바로 파일 탐색기가 열려 PDF 추가/교체 설정 ([DB에 저장] 시 최종 반영) */}
-              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                <button
-                  type="button"
-                  onClick={isEditMode ? handleTriggerPdfUpload : handleOpenPdfWindow}
-                  className="pdf-view-tab-btn"
-                  title={
-                    isEditMode
-                      ? (currentPdfName
-                          ? `등록 파일: ${currentPdfName}\n클릭하여 새 PDF 파일로 교체할 수 있습니다. ([DB에 저장] 시 최종 반영)`
-                          : '클릭하여 문제지 원본 PDF 파일을 선택/등록합니다. ([DB에 저장] 시 최종 반영)')
-                      : currentPdfUrl
-                      ? '문제지 원본 PDF 새 창으로 열람'
-                      : '등록된 문제지 원본 PDF가 없습니다.'
-                  }
+          </div>
+
+          <div className="reading-scroll">
+            {currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl ? (
+              /* B-1. 하이브리드 PDF 원문 뷰어 모드 (상단 도구창·좌측 썸네일 창 숨김, 문제지 면적 최대화) */
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', height: '100%' }}>
+                <div
                   style={{
-                    display: 'inline-flex',
+                    display: 'flex',
                     alignItems: 'center',
-                    gap: '5px',
-                    padding: '4px 10px',
-                    backgroundColor: isEditMode
-                      ? (currentPdfUrl ? '#eff6ff' : '#fff7ed')
-                      : (currentPdfUrl ? '#ffffff' : '#f8fafc'),
-                    color: isEditMode
-                      ? (currentPdfUrl ? '#2563eb' : '#ea580c')
-                      : (currentPdfUrl ? '#334155' : '#64748b'),
-                    border: `1.5px solid ${
-                      isEditMode
-                        ? (currentPdfUrl ? '#93c5fd' : '#fdba74')
-                        : (currentPdfUrl ? '#93c5fd' : '#e2e8f0')
-                    }`,
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '6px',
+                    padding: '6px 10px',
                     borderRadius: '8px',
-                    fontSize: '12.5px',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                    transition: 'all 0.15s ease'
+                    backgroundColor: '#f8fafc',
+                    border: '1px solid #e2e8f0',
                   }}
                 >
-                  {isEditMode ? (
-                    isUploadingPdf ? <Loader2 size={13} className="animate-spin" /> : <FileUp size={13} />
-                  ) : (
-                    <FileText size={13} />
-                  )}
-                  <span>
-                    {isEditMode
-                      ? (currentPdfUrl ? '원본PDF' : '+ 원본 PDF 선택')
-                      : (currentPdfUrl ? '원본 PDF' : '원본 PDF (미등록)')}
-                  </span>
-                </button>
-
-                {/* 편집 모드에서 등록된 PDF가 있을 때 간편 삭제 미니 버튼 */}
-                {isEditMode && currentPdfUrl && (
-                  <button
-                    type="button"
-                    onClick={handleRemovePdf}
-                    title="설정된 원본 PDF 삭제"
-                    style={{
-                      padding: '4px 6px',
-                      backgroundColor: '#fef2f2',
-                      color: '#dc2626',
-                      border: '1px solid #fecaca',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center'
-                    }}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                )}
-              </div>
-
-              {/* 관리자(admin) 전용 문제 인라인 편집 모드 토글 및 DB 저장 버튼 */}
-              {isAdmin && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setIsEditMode(prev => !prev)}
-                    className="admin-edit-toggle-btn"
-                    title="화면에서 문제와 제시문, 도표 이미지를 직접 수정하는 편집 모드 토글"
-                    style={{
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      gap: '5px',
-                      padding: '4px 11px',
-                      backgroundColor: isEditMode ? '#4338ca' : '#eef2ff',
-                      color: isEditMode ? '#ffffff' : '#4338ca',
-                      border: `1px solid ${isEditMode ? '#3730a3' : '#c7d2fe'}`,
-                      borderRadius: '8px',
-                      fontSize: '12px',
-                      fontWeight: 700,
-                      cursor: 'pointer',
-                      transition: 'all 0.15s ease'
-                    }}
-                  >
-                    <Edit3 size={13} />
-                    <span>{isEditMode ? '편집 모드 ON' : '문제 편집 모드'}</span>
-                  </button>
-
-                  {isEditMode && (
-                    <button
-                      type="button"
-                      onClick={handleSaveExamQuestions}
-                      disabled={isSavingExam}
-                      title="수정한 문제, 제시문, 도표 이미지 및 원본 PDF 설정을 Supabase DB에 일괄 저장"
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <FileText size={14} color="#2563eb" />
+                    <strong style={{ fontSize: '12.5px', color: '#1e3a8a' }}>
+                      {currentQ.title || `【${currentQ.label}】`} 공식 문제지
+                    </strong>
+                    {currentQ.questionPdfStartPage && currentQ.questionPdfStartPage > 1 && (
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: '#2563eb', background: '#eff6ff', padding: '1px 7px', borderRadius: '9999px', border: '1px solid #bfdbfe' }}>
+                        {currentQ.questionPdfStartPage}p~
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {/* PDF 본문 네이티브 확대/축소/가로맞춤 컨트롤 */}
+                    <div
                       style={{
                         display: 'inline-flex',
                         alignItems: 'center',
-                        gap: '5px',
-                        padding: '4px 12px',
-                        backgroundColor: '#16a34a',
-                        color: '#ffffff',
-                        border: '1px solid #15803d',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        fontWeight: 700,
-                        cursor: isSavingExam ? 'not-allowed' : 'pointer',
-                        boxShadow: '0 1px 3px rgba(22, 163, 74, 0.3)',
-                        transition: 'all 0.15s ease'
+                        borderRadius: '6px',
+                        border: '1px solid #cbd5e1',
+                        backgroundColor: '#ffffff',
+                        overflow: 'hidden',
                       }}
                     >
-                      {isSavingExam ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
-                      <span>{isSavingExam ? '저장 중...' : 'DB에 저장'}</span>
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
+                      <button
+                        type="button"
+                        onClick={handleZoomOutPdf}
+                        disabled={pdfZoom <= PDF_ZOOM_MIN}
+                        title="PDF 5% 축소"
+                        style={{
+                          padding: '3px 8px',
+                          border: 'none',
+                          background: 'transparent',
+                          color: pdfZoom <= PDF_ZOOM_MIN ? '#cbd5e1' : '#334155',
+                          fontSize: '13px',
+                          fontWeight: 800,
+                          cursor: pdfZoom <= PDF_ZOOM_MIN ? 'not-allowed' : 'pointer',
+                          lineHeight: 1.2,
+                        }}
+                      >
+                        −
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPdfZoom(PDF_ZOOM_DEFAULT)}
+                        title="기본 130% 크기로 초기화"
+                        style={{
+                          padding: '3px 7px',
+                          border: 'none',
+                          borderLeft: '1px solid #e2e8f0',
+                          borderRight: '1px solid #e2e8f0',
+                          background: '#f8fafc',
+                          color: '#1e3a8a',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          minWidth: '46px',
+                          textAlign: 'center',
+                        }}
+                      >
+                        {pdfZoom}%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleZoomInPdf}
+                        disabled={pdfZoom >= PDF_ZOOM_MAX}
+                        title="PDF 5% 확대"
+                        style={{
+                          padding: '3px 8px',
+                          border: 'none',
+                          background: 'transparent',
+                          color: pdfZoom >= PDF_ZOOM_MAX ? '#cbd5e1' : '#334155',
+                          fontSize: '13px',
+                          fontWeight: 800,
+                          cursor: pdfZoom >= PDF_ZOOM_MAX ? 'not-allowed' : 'pointer',
+                          lineHeight: 1.2,
+                        }}
+                      >
+                        +
+                      </button>
+                    </div>
 
-          {/* 도표/그래프 이미지 업로드용 숨김 파일 인풋 */}
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: 'none' }}
-            onChange={handleImageFileChange}
-          />
+                    <a
+                      href={`${currentQ.questionPdfUrl}#page=${currentQ.questionPdfStartPage || 1}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        padding: '3px 9px',
+                        borderRadius: '6px',
+                        backgroundColor: '#eff6ff',
+                        color: '#2563eb',
+                        border: '1px solid #bfdbfe',
+                        fontSize: '11.5px',
+                        fontWeight: 700,
+                        textDecoration: 'none',
+                      }}
+                    >
+                      <BookOpen size={12} />
+                      새 창 확대
+                    </a>
+                  </div>
+                </div>
 
-          {/* 문제지 원본 PDF 업로드/교체용 숨김 파일 인풋 */}
-          <input
-            ref={pdfInputRef}
-            type="file"
-            accept=".pdf,application/pdf"
-            style={{ display: 'none' }}
-            onChange={handlePdfFileChange}
-          />
+                {currentQ.note && (
+                  <div style={{ padding: '8px 12px', borderRadius: '8px', background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: '12.5px', color: '#334155', whiteSpace: 'pre-wrap' }}>
+                    {currentQ.note}
+                  </div>
+                )}
 
-          <div className="reading-scroll">
-            {/* 관리자 알림 토스트 배너 (하단 제시문 편집 중에도 업로드 성공/실패를 즉시 확인할 수 있도록 상단 고정) */}
-            {adminNotice && (
-              <div
-                style={{
-                  position: 'sticky',
-                  top: '8px',
-                  zIndex: 20,
-                  margin: '0 0 14px 0',
-                  padding: '10px 14px',
-                  borderRadius: '8px',
-                  backgroundColor: adminNotice.type === 'success' ? '#f0fdf4' : '#fef2f2',
-                  border: `1px solid ${adminNotice.type === 'success' ? '#86efac' : '#fecaca'}`,
-                  color: adminNotice.type === 'success' ? '#15803d' : '#b91c1c',
-                  boxShadow: '0 4px 12px rgba(15, 23, 42, 0.08)',
-                  fontSize: '12.5px',
-                  fontWeight: 600,
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '8px'
-                }}
-              >
-                {adminNotice.type === 'success' ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-                <span>{adminNotice.message}</span>
+                <div className="pdf-viewer-frame-wrap">
+                  {/* PDF.js 캔버스 뷰어: 어두운 브라우저 회색 여백 없이 100% 흰색 배경 + 110% 가로폭 맞춤 */}
+                  <CleanPdfViewer
+                    url={currentQ.questionPdfUrl}
+                    startPage={currentQ.questionPdfStartPage || 1}
+                    zoom={pdfZoom}
+                    baseZoom={PDF_ZOOM_BASE}
+                  />
+                </div>
               </div>
-            )}
-
-            {/* A. 관리자 인라인 편집 모드 뷰 (모듈화 컴포넌트) */}
-            {isEditMode ? (
-              <ExamInlineEditor
-                currentQ={currentQ}
-                isUploadingImage={isUploadingImage}
-                onTriggerPromptUpload={handleTriggerPromptUpload}
-                onUpdateTitle={handleUpdateTitle}
-                onUpdateNote={handleUpdateNote}
-                onRemovePromptImage={handleRemovePromptImage}
-                onUpdatePassageBadge={handleUpdatePassageBadge}
-                onDeletePassage={handleDeletePassage}
-                onUpdateParagraph={handleUpdateParagraph}
-                onMoveParagraphUp={handleMoveParagraphUp}
-                onMoveParagraphDown={handleMoveParagraphDown}
-                onDeleteParagraph={handleDeleteParagraph}
-                onTriggerPassageUpload={handleTriggerPassageUpload}
-                onAddParagraph={handleAddParagraph}
-                onAddPassage={handleAddPassage}
-              />
             ) : (
-              /* B. 일반 학생 응시 및 기본 열람 뷰 */
+              /* B-2. 일반 학생 응시 및 기본 텍스트 열람 뷰 (기존 기출 100% 하위 호환) */
               <>
                 <article className="prompt-card">
                   {(() => {
