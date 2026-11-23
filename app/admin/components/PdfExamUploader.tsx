@@ -20,6 +20,9 @@ import {
   BookOpen,
   ClipboardList,
   ExternalLink,
+  Sparkles,
+  Cpu,
+  Scissors,
 } from 'lucide-react'
 import { getUniversityTracks } from '@/lib/constants/universities'
 import type { QuestionScoringSystem } from '@/lib/exam-helper'
@@ -98,6 +101,18 @@ export default function PdfExamUploader({
   const [sharedPdfName, setSharedPdfName] = useState<string>('')
   const [isUploadingSharedPdf, setIsUploadingSharedPdf] = useState<boolean>(false)
 
+  // 2-1. 업로드된 PDF 멀티모달 AI 자동 분석 상태
+  const [selectedAiModel, setSelectedAiModel] = useState<string>('gemini-3.1-pro-preview')
+  const [aiInstruction, setAiInstruction] = useState<string>('')
+  const [isAnalyzingPdf, setIsAnalyzingPdf] = useState<boolean>(false)
+
+  // 2-2. 「2. 문항 및 제시문」 페이지만 자동 분리 + 반복 배경 학교 로고 워터마크 제거 상태
+  const [sliceStartPage, setSliceStartPage] = useState<number>(1)
+  const [sliceEndPage, setSliceEndPage] = useState<number>(6)
+  const [removeWatermark, setRemoveWatermark] = useState<boolean>(true)
+  const [isSlicingPdf, setIsSlicingPdf] = useState<boolean>(false)
+  const [isPdfSliced, setIsPdfSliced] = useState<boolean>(false)
+
   // 3. 문항 리스트 상태
   const [questions, setQuestions] = useState<DraftPdfQuestion[]>([
     createEmptyDraftQuestion(0),
@@ -140,11 +155,159 @@ export default function PdfExamUploader({
       const uploaded = await uploadPdfFile(file)
       setSharedPdfUrl(uploaded.url)
       setSharedPdfName(uploaded.name)
-      showNotice('success', `통합 문제지 PDF("${uploaded.name}")가 업로드되었습니다. 각 문항의 시작 페이지를 지정해 주세요.`)
+      setIsPdfSliced(false)
+      showNotice('success', `통합 문제지 PDF("${uploaded.name}")가 업로드되었습니다. 아래에서 AI 자동 분석 및 문제 페이지만 분리할 수 있습니다.`)
     } catch (err: any) {
       showNotice('error', err.message || '통합 PDF 업로드 실패')
     } finally {
       setIsUploadingSharedPdf(false)
+    }
+  }
+
+  // ✨ 업로드된 통합 PDF를 AI로 자동 분석하여 1단계 메타데이터 및 2단계 문항·채점기준·예시답안 자동 채우기
+  const handleAnalyzeSharedPdf = async () => {
+    if (!sharedPdfUrl) {
+      showNotice('error', '먼저 통합 문제지/보고서 PDF를 업로드해 주세요.')
+      return
+    }
+
+    setIsAnalyzingPdf(true)
+    try {
+      const res = await fetch('/api/admin/analyze-pdf-exam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pdfUrl: sharedPdfUrl,
+          univId: selectedUniv,
+          univName,
+          targetFaculty,
+          customInstruction: aiInstruction.trim(),
+          model: selectedAiModel,
+        }),
+      })
+
+      const result = await res.json()
+      if (!res.ok || !result.success || !result.data) {
+        throw new Error(result.error || 'PDF AI 자동 분석에 실패했습니다.')
+      }
+
+      const parsed = result.data
+      if (parsed.year) setYear(String(parsed.year))
+      if (parsed.type === '기출문제' || parsed.type === '모의논술' || parsed.type === '예상문제') {
+        setExamType(parsed.type)
+      }
+      if (parsed.title) setTitle(String(parsed.title))
+      if (parsed.totalTime && Number(parsed.totalTime) > 0) setTotalTime(Number(parsed.totalTime))
+      if (parsed.summary) setSummary(String(parsed.summary))
+      if (parsed.problemSectionStartPage && Number(parsed.problemSectionStartPage) > 0) {
+        setSliceStartPage(Number(parsed.problemSectionStartPage))
+      }
+      if (parsed.problemSectionEndPage && Number(parsed.problemSectionEndPage) > 0) {
+        setSliceEndPage(Number(parsed.problemSectionEndPage))
+      }
+
+      if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+        const mapped: DraftPdfQuestion[] = parsed.questions.map((q: any, idx: number) => {
+          const sType: 'score' | 'grade' | 'both' =
+            q.scoringType === 'grade' || q.scoringType === 'score' || q.scoringType === 'both'
+              ? q.scoringType
+              : 'both'
+          const gScale = Array.isArray(q.gradeScale)
+            ? q.gradeScale.join(', ')
+            : typeof q.gradeScale === 'string'
+            ? q.gradeScale
+            : 'A+, A0, A-, B+, B0, B-, C, D, F'
+
+          return {
+            label: q.label || `문제 ${idx + 1}`,
+            limit: q.limit || '800±100자',
+            note: '',
+            questionPdfUrl: '',
+            questionPdfName: '',
+            questionPdfStartPage: Math.max(1, Number(q.questionPdfStartPage) || idx + 1),
+            scoringType: sType,
+            maxScore: Number(q.maxScore) || 100,
+            gradeScaleText: gScale,
+            cutlineLabel: '100점 환산 82점 이상',
+            rawRubricText: q.rawRubricText || '',
+            rubricPdfUrl: '',
+            rubricPdfName: '',
+            modelAnswer: q.modelAnswer || '',
+          }
+        })
+        setQuestions(mapped)
+      }
+
+      const usedModelLabel = result.modelUsed ? ` (사용 모델: ${result.modelUsed})` : ''
+      showNotice(
+        'success',
+        `✨ AI가 PDF를 분석하여 ${parsed.questions?.length || 0}개 문항의 배점·등급표·채점기준·예시답안을 2단계에 자동 입력했습니다! 검토 후 저장해 주세요.${usedModelLabel}`
+      )
+    } catch (err: any) {
+      showNotice('error', err.message || 'PDF AI 자동 분석 중 오류가 발생했습니다.')
+    } finally {
+      setIsAnalyzingPdf(false)
+    }
+  }
+
+  // ✂️ 문항카드 PDF에서 「2. 문항 및 제시문」 페이지 범위만 물리적으로 잘라내고 반복 학교 로고 워터마크 제거
+  const handleSliceProblemPages = async () => {
+    if (!sharedPdfUrl) {
+      showNotice('error', '먼저 문항카드/통합 PDF를 업로드해 주세요.')
+      return
+    }
+    if (sliceStartPage < 1 || sliceEndPage < sliceStartPage) {
+      showNotice('error', '시작 페이지와 끝 페이지 범위를 올바르게 입력해 주세요.')
+      return
+    }
+
+    setIsSlicingPdf(true)
+    try {
+      const res = await fetch('/api/admin/slice-pdf-exam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pdfUrl: sharedPdfUrl,
+          startPage: sliceStartPage,
+          endPage: sliceEndPage,
+          removeWatermark,
+          univId: selectedUniv,
+          fileLabel: `${selectedUniv}_${year}`,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success || !data.url) {
+        throw new Error(data.error || 'PDF 문제지 페이지 분리에 실패했습니다.')
+      }
+
+      // 잘라낸 순수 문제지 PDF로 자동 교체하고, 각 문항 시작 페이지도 새 PDF 기준(1부터)으로 자동 재계산
+      setSharedPdfUrl(data.url)
+      setSharedPdfName(`[문제지만 분리 p.${data.startPage}~${data.endPage}] ${sharedPdfName}`)
+      setIsPdfSliced(true)
+      setQuestions((prev) =>
+        prev.map((q) => {
+          const adjusted = Math.max(1, (Number(q.questionPdfStartPage) || data.startPage) - data.startPage + 1)
+          return {
+            ...q,
+            questionPdfStartPage: Math.min(adjusted, data.pageCount || 1),
+          }
+        })
+      )
+
+      const wmText =
+        data.removedWatermarksCount > 0
+          ? ` (반복 배경 학교 로고 워터마크 ${data.removedWatermarksCount}건 자동 제거 완료!)`
+          : removeWatermark
+          ? ' (반복 워터마크 없음 또는 이미 깨끗함)'
+          : ''
+      showNotice(
+        'success',
+        `✂️ ${data.startPage}p ~ ${data.endPage}p(총 ${data.pageCount}페이지)만 순수 문제지 PDF로 분리·교체되었습니다!${wmText}`
+      )
+    } catch (err: any) {
+      showNotice('error', err.message || 'PDF 페이지 분리 중 오류가 발생했습니다.')
+    } finally {
+      setIsSlicingPdf(false)
     }
   }
 
@@ -481,6 +644,198 @@ export default function PdfExamUploader({
             </label>
           </div>
         </div>
+
+        {/* ✨ 업로드된 통합 PDF AI 자동 분석 & 2단계 자동 채우기 패널 */}
+        {sharedPdfUrl && (
+          <div
+            style={{
+              padding: '14px 16px',
+              borderRadius: '10px',
+              background: 'linear-gradient(180deg, #f0fdf4 0%, #ffffff 100%)',
+              border: '1px solid #86efac',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '10px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Sparkles size={15} color="#16a34a" />
+                <strong style={{ fontSize: '13px', color: '#14532d' }}>
+                  AI 자동 분석으로 2단계 문항·채점기준·예시답안 자동 채우기
+                </strong>
+              </div>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#166534', display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                  <Cpu size={12} /> 분석 모델:
+                </span>
+                <select
+                  value={selectedAiModel}
+                  onChange={(e) => setSelectedAiModel(e.target.value)}
+                  disabled={isAnalyzingPdf}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: '6px',
+                    border: '1px solid #86efac',
+                    background: '#ffffff',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    color: '#0f172a',
+                  }}
+                >
+                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (정밀 권장)</option>
+                  <option value="gemini-4-hydrogen">Gemini 4 Hydrogen (고속·고정밀)</option>
+                  <option value="gemini-3.8-flash">Gemini 3.8 Flash (가성비)</option>
+                  <option value="gemini-4-argon">Gemini 4 Argon</option>
+                </select>
+              </div>
+            </div>
+
+            <textarea
+              rows={2}
+              className="admin-input"
+              value={aiInstruction}
+              onChange={(e) => setAiInstruction(e.target.value)}
+              disabled={isAnalyzingPdf}
+              placeholder='(선택) AI 추가 지시사항 — 예: "문항카드 1(인문 T1)만 추출해 줘" / "자연계열 문제는 제외해 줘"'
+              style={{ fontSize: '12.5px', background: '#ffffff', resize: 'vertical' }}
+            />
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>빠른 지시:</span>
+                {[
+                  '자연계열 문제는 제외하고 선택한 계열 문항만 추출해 줘.',
+                  '문항카드 1(첫 번째 회차) 문항 세트만 추출해 줘.',
+                  '문항카드 2(두 번째 회차) 문항 세트만 추출해 줘.',
+                ].map((preset, idx) => (
+                  <button
+                    key={idx}
+                    type="button"
+                    disabled={isAnalyzingPdf}
+                    onClick={() => setAiInstruction((prev) => (prev.trim() ? `${prev.trim()}\n${preset}` : preset))}
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: '9999px',
+                      border: '1px solid #cbd5e1',
+                      background: '#ffffff',
+                      color: '#334155',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    + {preset.length > 24 ? `${preset.slice(0, 24)}...` : preset}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleAnalyzeSharedPdf}
+                disabled={isAnalyzingPdf}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '8px 16px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  background: 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
+                  color: '#ffffff',
+                  fontSize: '12.5px',
+                  fontWeight: 800,
+                  cursor: isAnalyzingPdf ? 'wait' : 'pointer',
+                  boxShadow: '0 2px 8px rgba(22, 163, 74, 0.25)',
+                  opacity: isAnalyzingPdf ? 0.75 : 1,
+                }}
+              >
+                {isAnalyzingPdf ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                {isAnalyzingPdf ? 'AI가 PDF를 분석해 2단계를 채우는 중...' : '✨ 업로드된 PDF AI 자동 분석 & 2단계 채우기'}
+              </button>
+            </div>
+
+            <span style={{ fontSize: '11.5px', color: '#475569' }}>
+              💡 1) AI 자동 분석으로 2단계와 문제 페이지 범위를 채운 뒤 → 2) 아래 <strong>「문제지 페이지만 자동 분리」</strong>를 누르면 해설·답안 페이지와 학교 로고 배경이 제거된 순수 문제지 PDF로 자동 교체됩니다.
+            </span>
+
+            {/* ✂️ 「2. 문항 및 제시문」 페이지 범위만 물리 분리 + 반복 배경 로고(워터마크) 자동 제거 바 */}
+            <div
+              style={{
+                marginTop: '4px',
+                padding: '10px 12px',
+                borderRadius: '8px',
+                background: isPdfSliced ? '#eff6ff' : '#ffffff',
+                border: `1px solid ${isPdfSliced ? '#93c5fd' : '#bbf7d0'}`,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                  <Scissors size={13} color="#2563eb" />
+                  문제지 페이지만 분리:
+                </span>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', color: '#334155' }}>
+                  <input
+                    type="number"
+                    min={1}
+                    value={sliceStartPage}
+                    onChange={(e) => setSliceStartPage(Math.max(1, Number(e.target.value) || 1))}
+                    disabled={isSlicingPdf}
+                    style={{ width: '54px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #cbd5e1', textAlign: 'center', fontWeight: 700 }}
+                  />
+                  <span>p ~</span>
+                  <input
+                    type="number"
+                    min={1}
+                    value={sliceEndPage}
+                    onChange={(e) => setSliceEndPage(Math.max(1, Number(e.target.value) || 1))}
+                    disabled={isSlicingPdf}
+                    style={{ width: '54px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #cbd5e1', textAlign: 'center', fontWeight: 700 }}
+                  />
+                  <span>p</span>
+                </div>
+
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 700, color: '#334155', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={removeWatermark}
+                    onChange={(e) => setRemoveWatermark(e.target.checked)}
+                    disabled={isSlicingPdf}
+                  />
+                  배경 학교 로고(워터마크) 자동 제거
+                </label>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSliceProblemPages}
+                disabled={isSlicingPdf}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  padding: '7px 13px',
+                  borderRadius: '7px',
+                  border: 'none',
+                  background: isPdfSliced ? '#1e40af' : '#2563eb',
+                  color: '#ffffff',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: isSlicingPdf ? 'wait' : 'pointer',
+                  opacity: isSlicingPdf ? 0.7 : 1,
+                }}
+              >
+                {isSlicingPdf ? <Loader2 size={13} className="animate-spin" /> : <Scissors size={13} />}
+                {isSlicingPdf ? '문제지 분리 및 로고 제거 중...' : isPdfSliced ? '✓ 분리 완료 (다시 분리)' : '✂️ 문제지 페이지만 자동 분리 & 교체'}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 2단계: 문항별 PDF · 대학 고유 채점기준 구성 */}

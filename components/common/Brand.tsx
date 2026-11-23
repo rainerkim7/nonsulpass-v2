@@ -14,7 +14,7 @@ interface BrandProps {
   hideSubtitle?: boolean
 }
 
-export default function Brand({ onHome, hideSubtitle = false }: BrandProps) {
+export default function Brand({ onHome }: BrandProps) {
   return (
     <div
       className={`brand-block ${onHome ? 'cursor-pointer select-none transition-all hover:opacity-80 active:scale-[0.98]' : ''}`}
@@ -30,9 +30,6 @@ export default function Brand({ onHome, hideSubtitle = false }: BrandProps) {
         <p className="brand-name">
           논술패스 <span>Lab</span>
         </p>
-        {!hideSubtitle && (
-          <p className="brand-subtitle">대입 논술의 새로운 기준</p>
-        )}
       </div>
     </div>
   )

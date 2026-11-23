@@ -17,7 +17,7 @@ export const DEFAULT_MAX_ATTEMPTS = 5
 export const DEFAULT_PERIOD_DAYS = 365 // 기본 패스 유효기간 365일
 export const DEFAULT_BASE_CREDITS = 60 // 기본 패스 제공 채점 횟수 60회
 export const DEFAULT_GRADING_MODEL = 'gemini-3.1-pro-preview' // 기본 정밀 채점 AI 모델
-export const DEFAULT_ALLOW_SIGNUP = false // 기본 신규 회원가입 허용 여부 (개발 테스트 기간 기본 차단)
+export const DEFAULT_ALLOW_SIGNUP = true // 기본 신규 회원가입 허용 여부 (관리자 콘솔에서 언제든 ON/OFF 전환 가능)
 
 /**
  * 1. 현재 설정된 AI 채점 및 패스 운영 정책 조회 (GET)

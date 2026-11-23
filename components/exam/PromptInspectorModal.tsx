@@ -15,6 +15,16 @@ interface PromptInspectorModalProps {
   passages: any[]
   rubric: any
   modelAnswer: string
+  /** 하이브리드 PDF 문항 지원용 선택 필드 (실제 /api/grade 프롬프트와 1:1 동기화) */
+  questionPdfUrl?: string
+  rawRubricText?: string
+  rubricPdfUrl?: string
+  scoringSystem?: {
+    type: 'score' | 'grade' | 'both'
+    maxScore: number
+    gradeScale?: string[]
+    cutlineLabel?: string
+  } | null
   studentAnswer: string
   onRunCustomGrade: (customSysPrompt: string, customUserPrompt: string) => void
   isGrading: boolean
@@ -31,6 +41,10 @@ export default function PromptInspectorModal({
   passages,
   rubric,
   modelAnswer,
+  questionPdfUrl,
+  rawRubricText,
+  rubricPdfUrl,
+  scoringSystem,
   studentAnswer,
   onRunCustomGrade,
   isGrading,
@@ -38,17 +52,45 @@ export default function PromptInspectorModal({
   const [activeTab, setActiveTab] = useState<'user' | 'system'>('user')
   const [copied, setCopied] = useState(false)
 
-  // 기본 시스템 프롬프트 생성 헬퍼
+  // 기본 시스템 프롬프트 생성 헬퍼 (/api/grade/route.ts와 1:1 동기화)
   const generateDefaultSystemPrompt = () => {
+    const hasCustomScoring = Boolean(scoringSystem && typeof scoringSystem === 'object')
+    const nativeMaxScore = hasCustomScoring && Number(scoringSystem?.maxScore) > 0 ? Number(scoringSystem?.maxScore) : 100
+    const nativeScoringType: 'score' | 'grade' | 'both' =
+      hasCustomScoring && (scoringSystem?.type === 'grade' || scoringSystem?.type === 'both' || scoringSystem?.type === 'score')
+        ? scoringSystem.type
+        : 'score'
+    const gradeScaleStr =
+      hasCustomScoring && Array.isArray(scoringSystem?.gradeScale) && scoringSystem.gradeScale.length > 0
+        ? scoringSystem.gradeScale.join(', ')
+        : ''
+
+    const hasPdfAttachments = Boolean(questionPdfUrl || rubricPdfUrl)
+    const pdfNote = hasPdfAttachments
+      ? `\n※ [첨부 PDF 멀티모달 분석 지침]: 첨부된 PDF 파일에 실제 대학 문제지(발문·제시문·도표·그래프·수식) 및/또는 공식 채점기준·해설 원문이 포함되어 있습니다. 반드시 첨부 PDF 내의 도표·수치·제시문·채점기준을 직접 정밀 판독하여 채점하십시오.\n`
+      : ''
+
+    const scoringScaleInstruction = hasCustomScoring
+      ? `2. **대학 고유 배점 및 등급 체계 엄수**:
+   - 이 문항의 대학 공식 원만점은 **${nativeMaxScore}점**입니다. "maxPossibleScore"는 반드시 ${nativeMaxScore}로 설정하고, "criteria" 배열의 각 평가 항목별 획득 점수("score") 합계가 "totalScore"(${nativeMaxScore}점 만점 기준)와 정확히 일치해야 합니다.
+   - "scoringType"은 "${nativeScoringType}"로 출력하십시오.
+   - ${
+     nativeScoringType !== 'score'
+       ? `대학 공식 등급 체계([${gradeScaleStr || 'A+, A, B+, B, C, D, F'}])에 따라 "officialGrade"에 정확한 공식 등급을 판정하고, "gradeRationale"에 등급 판정 근거를 1~2문장으로 명시하십시오.`
+       : '점수제 문항이므로 원배점 기준을 정확히 산출하십시오.'
+   }
+   - 대학 발표 논술 합격선(100점 기준)과 수험생이 직관적으로 비교할 수 있도록, "normalizedScore100"에 반드시 **100점 환산 참고점수(정수 0~100)**를 함께 산출하십시오.`
+      : `2. **배점 합산 일치**: "criteria" 배열의 각 평가 항목별 획득 점수("score")의 합계가 "totalScore"와 반드시 정확히 일치해야 합니다. (총점 100점 만점 기준)`
+
     return `당신은 대한민국 명문 대학 인문/사회계열 논술 출제위원장이자 수석 채점위원입니다.
-제출된 답안을 아래의 [문제 발문], [제시문], [공식 채점 기준표]만을 엄격한 평가 잣대로 삼아 독립적이고 객관적인 블라인드 채점(Blind Grading)을 수행하십시오.
+제출된 답안을 아래의 [문제 발문], [제시문/첨부 PDF], [공식 채점 기준표]만을 엄격한 평가 잣대로 삼아 독립적이고 객관적인 블라인드 채점(Blind Grading)을 수행하십시오.${pdfNote}
 
 【블라인드 정밀 채점 원칙】
 1. **절대적 채점 기준표 기반 평가 (후광 효과 배제)**:
    - 제출된 답안이 모범답안이든 누구의 글이든 상관없이, 오직 [공식 채점 기준표]의 각 영역별 배점과 세부 필수 요구조건을 실제로 충족했는지만으로 점수를 평가하십시오.
    - 답안이 유려하더라도 채점 기준표에 명시된 필수 논점이나 상반된 두 입장의 구체적 논거를 구체적으로 서술하지 않고 추상적으로 얼버무렸다면, 반드시 해당 영역에서 감점(부분 점수)을 엄격히 적용하십시오.
-   - 채점 기준표의 세부 논거를 100% 온전히 전개하지 못한 답안에 무비판적으로 100점 만점을 부여하는 것은 중대한 채점 오류입니다. (미흡한 영역이 있다면 80점대 등의 실질 점수를 부여할 것)
-2. **배점 합산 일치**: "criteria" 배열의 각 평가 항목별 획득 점수("score")의 합계가 "totalScore"와 반드시 정확히 일치해야 합니다. (총점 100점 만점 기준)
+   - 채점 기준표의 세부 논거를 100% 온전히 전개하지 못한 답안에 무비판적으로 만점을 부여하는 것은 중대한 채점 오류입니다.
+${scoringScaleInstruction}
 3. **실질적 감점 요인 명시**: "deductions" 항목에는 채점 기준표 대비 실제 누락되거나 축약된 논점, 논리적 비약 등 구체적인 감점 사유와 감점 점수(음수)를 사실대로 기재하십시오.
 4. **개념어 적중 및 분량**: 규정 분량(${charLimit || '800±100자'}) 준수 여부 및 채점 기준의 핵심 개념어 도출 여부를 엄밀히 평가하십시오.
 
@@ -59,10 +101,14 @@ export default function PromptInspectorModal({
   "questionLabel": "${questionLabel}",
   "studentName": "수험생",
   "totalScore": 0,
-  "maxPossibleScore": 100,
+  "maxPossibleScore": ${nativeMaxScore},
+  "scoringType": "${nativeScoringType}",
+  "officialGrade": ${nativeScoringType !== 'score' ? '"A"' : 'null'},
+  "gradeRationale": ${nativeScoringType !== 'score' ? '"등급 판정 핵심 근거 1~2문장"' : 'null'},
+  "normalizedScore100": 0,
   "cutlineScore": 82,
   "statusVerdict": "합격 가능권",
-  "charCount": ${studentAnswer ? studentAnswer.replace(/\\r\\n/g, '\\n').length : 0},
+  "charCount": ${studentAnswer ? studentAnswer.replace(/\r\n/g, '\n').length : 0},
   "charStatus": "통과 · 감점 0점",
   "conceptHits": {
     "matchedCount": 0,
@@ -99,15 +145,24 @@ export default function PromptInspectorModal({
 }`
   }
 
-  // 기본 사용자 프롬프트 생성 헬퍼
+  // 기본 사용자 프롬프트 생성 헬퍼 (/api/grade/route.ts와 1:1 동기화)
   const generateDefaultUserPrompt = () => {
-    const passagesText = Array.isArray(passages)
+    const passagesText = Array.isArray(passages) && passages.length > 0
       ? passages
           .map((p: any) => `${p.badge || '[제시문]'}\n${Array.isArray(p.paragraphs) ? p.paragraphs.join('\n') : p.text || p.content || ''}`)
           .join('\n\n')
+      : questionPdfUrl
+      ? `(📎 문제지 PDF 멀티모달 자동 첨부됨: ${questionPdfUrl})`
       : ''
 
-    const rubricText = rubric ? JSON.stringify(rubric, null, 2) : '대학별 공식 채점 지침에 따름'
+    const rubricText =
+      typeof rawRubricText === 'string' && rawRubricText.trim()
+        ? rawRubricText.trim()
+        : rubricPdfUrl
+        ? `(📎 채점기준·해설 PDF 멀티모달 자동 첨부됨: ${rubricPdfUrl})`
+        : rubric
+        ? JSON.stringify(rubric, null, 2)
+        : '대학별 공식 채점 지침에 따름'
 
     return `[문제 발문]:
 ${questionTitle || `${university} ${questionLabel}`}
@@ -137,7 +192,7 @@ ${modelAnswer || '제시문과 발문의 논리적 일치 여부로 판단'}`
       setSystemPrompt(generateDefaultSystemPrompt())
       setUserPrompt(generateDefaultUserPrompt())
     }
-  }, [isOpen, university, examTitle, questionLabel, questionTitle, charLimit, passages, rubric, modelAnswer, studentAnswer])
+  }, [isOpen, university, examTitle, questionLabel, questionTitle, charLimit, passages, rubric, modelAnswer, questionPdfUrl, rawRubricText, rubricPdfUrl, scoringSystem, studentAnswer])
 
   if (!isOpen) return null
 

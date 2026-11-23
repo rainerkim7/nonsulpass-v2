@@ -5,6 +5,7 @@
 
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { getUniversityName, getUniversityTracks } from '@/lib/constants/universities'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,6 +54,40 @@ export async function POST(req: Request) {
         { error: '연도(year)와 시험명(title)은 필수 입력 항목입니다.' },
         { status: 400 }
       )
+    }
+
+    // 0. 부모 테이블(universities)에 해당 univ_id 레코드가 없으면 자동 생성하고 활성화 보장
+    //    (신규 DB에서 홍익대 외 대학의 기출/PDF 시험을 최초 등록할 때 exams_univ_id_fkey 외래키 오류 방지)
+    const { data: existingUniv } = await supabase
+      .from('universities')
+      .select('id, is_active')
+      .eq('id', univ_id)
+      .maybeSingle()
+
+    if (!existingUniv) {
+      const qCount = Array.isArray(body.questions)
+        ? body.questions.length
+        : body.questions && typeof body.questions === 'object'
+        ? Object.keys(body.questions).length
+        : 2
+      const { error: univInsertErr } = await supabase.from('universities').insert({
+        id: univ_id,
+        name: getUniversityName(univ_id),
+        faculty: getUniversityTracks(univ_id).join(' · ') || target_faculty,
+        exam_duration: `${Number(total_time) || 120}분`,
+        total_questions: `${qCount}문항`,
+        char_per_question: total_length || '문항당 800~1,000자',
+        exam_format: '원고지 완결형 서술',
+        is_active: true,
+      })
+      if (univInsertErr) {
+        return NextResponse.json(
+          { error: `대학 기본 레코드 자동 생성 실패 (${univ_id}): ${univInsertErr.message}` },
+          { status: 500 }
+        )
+      }
+    } else if (!existingUniv.is_active) {
+      await supabase.from('universities').update({ is_active: true }).eq('id', univ_id)
     }
 
     // ID가 없으면 고유 ID 생성 (예: hongik-2026-custom-1234)

@@ -16,6 +16,8 @@ interface CleanPdfViewerProps {
   url: string
   /** 통합 PDF 사용 시 초기 자동 스크롤할 시작 페이지 번호 (1부터 시작) */
   startPage?: number
+  /** 문항 전환 감지용 식별 키 (예: q1, q2, q3 — 탭 클릭 시 항상 해당 페이지 최상단으로 이동) */
+  questionKey?: string
   /** 현재 배율 (기본값: 110 — 110% 기준 가로폭 맞춤, ±5% 단위 증감) */
   zoom?: number
   /** 기준 배율 (이 배율일 때 컨테이너 가로폭에 딱 맞게 렌더링, 기본 110) */
@@ -25,6 +27,7 @@ interface CleanPdfViewerProps {
 export default function CleanPdfViewer({
   url,
   startPage = 1,
+  questionKey,
   zoom = 110,
   baseZoom = 110,
 }: CleanPdfViewerProps) {
@@ -184,12 +187,9 @@ export default function CleanPdfViewer({
         setIsPagesReady(true)
         if (containerRef.current) {
           const el = containerRef.current
-          if (startPage > 1 && !hasScrolledToStartRef.current) {
-            const targetEl = pageRefs.current[Math.min(startPage - 1, numPages - 1)]
-            if (targetEl) {
-              el.scrollTop = targetEl.offsetTop
-              hasScrolledToStartRef.current = true
-            }
+          if (!hasScrolledToStartRef.current) {
+            scrollToPageTop(startPage)
+            hasScrolledToStartRef.current = true
           } else if (prevCenterYRatio !== null && el.scrollHeight > el.clientHeight) {
             el.scrollTop = Math.max(0, prevCenterYRatio * el.scrollHeight - el.clientHeight / 2)
           }
@@ -216,22 +216,39 @@ export default function CleanPdfViewer({
     }
   }, [pdfDoc, numPages, containerWidth, zoom, baseZoom])
 
-  // 4. 통합 PDF 내 문항 전환 시(startPage 변경) 재렌더링 없이 해당 페이지로 즉시 이동
-  useEffect(() => {
-    if (!isPagesReady || numPages === 0 || !containerRef.current) return
-    const targetIdx = Math.max(0, Math.min(startPage - 1, numPages - 1))
+  // 지정된 페이지(1-indexed)의 정확한 최상단으로 컨테이너 스크롤 이동 헬퍼
+  const scrollToPageTop = (pageNum: number) => {
+    const el = containerRef.current
+    if (!el || numPages === 0) return
+    const targetIdx = Math.max(0, Math.min(pageNum - 1, numPages - 1))
     const targetEl = pageRefs.current[targetIdx]
-    if (targetEl) {
-      containerRef.current.scrollTop = targetEl.offsetTop
-      hasScrolledToStartRef.current = true
+    if (!targetEl) return
+
+    if (targetIdx === 0) {
+      el.scrollTop = 0
+      return
     }
-  }, [startPage, isPagesReady, numPages])
+    const containerRect = el.getBoundingClientRect()
+    const targetRect = targetEl.getBoundingClientRect()
+    const nextScrollTop = Math.max(0, Math.round(el.scrollTop + (targetRect.top - containerRect.top) - 8))
+    el.scrollTop = nextScrollTop
+  }
+
+  // 4. 통합 PDF 내 문항 전환 시(questionKey / startPage 변경) 재렌더링 없이 해당 페이지 최상단으로 즉시 이동
+  useEffect(() => {
+    if (!isPagesReady || numPages === 0) return
+    requestAnimationFrame(() => {
+      scrollToPageTop(startPage)
+      hasScrolledToStartRef.current = true
+    })
+  }, [startPage, questionKey, isPagesReady, numPages])
 
   return (
     <div
       ref={containerRef}
       className="clean-pdf-scroll"
       style={{
+        position: 'relative',
         width: '100%',
         height: '100%',
         overflowX: 'auto',

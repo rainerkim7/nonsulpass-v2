@@ -123,6 +123,30 @@ export default function ExamWorkspace({
   // 답안 불러오기 안내 토스트 배너 상태
   const [loadNotice, setLoadNotice] = useState<string | null>(null)
 
+  // ⏱️ 실전 답안 작성 경과 시간 스톱워치 상태 (기본값: 중지 00:00, 시:분 표시)
+  const [elapsedSeconds, setElapsedSeconds] = useState<number>(0)
+  const [isTimerRunning, setIsTimerRunning] = useState<boolean>(false)
+
+  useEffect(() => {
+    if (!isTimerRunning) return
+    const timerId = window.setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1)
+    }, 1000)
+    return () => window.clearInterval(timerId)
+  }, [isTimerRunning])
+
+  const handleToggleTimer = () => {
+    setIsTimerRunning((prev) => !prev)
+  }
+
+  const handleResetTimer = () => {
+    setIsTimerRunning(false)
+    setElapsedSeconds(0)
+  }
+
+  const elapsedHoursStr = String(Math.floor(elapsedSeconds / 3600)).padStart(2, '0')
+  const elapsedMinutesStr = String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2, '0')
+
   // 이전 작성 답안 에디터로 불러오기 핸들러 (선택된 이력 ID 갱신, 에디터 로드, 로컬 스토리지에 1:1 영구 저장)
   const handleLoadSubmissionAnswer = (item: SubmissionHistoryItem) => {
     setSelectedSubmissionId(item.id)
@@ -705,12 +729,33 @@ export default function ExamWorkspace({
               리포트
             </button>
           </div>
+          {/* ⏱️ 경과 시간 스톱워치 (시:분 표시 + ON/OFF 토글 + 리셋) */}
           <div className="timer">
-            <Clock3 />
-            <div>
-              <span className="timer-label">남은 시간</span>
-              <strong>00:54:12</strong>
-            </div>
+            <Clock3 className={isTimerRunning ? 'timer-icon-active' : ''} />
+            <strong className="timer-time" title="경과 시간 (시:분)">
+              {elapsedHoursStr}
+              <span className={isTimerRunning ? 'timer-colon-blink' : ''}>:</span>
+              {elapsedMinutesStr}
+            </strong>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={isTimerRunning}
+              onClick={handleToggleTimer}
+              className={`timer-toggle ${isTimerRunning ? 'on' : 'off'}`}
+              title={isTimerRunning ? '타이머 일시정지 (OFF)' : '타이머 시작 (ON)'}
+            >
+              <span className="timer-toggle-knob" />
+            </button>
+            <button
+              type="button"
+              onClick={handleResetTimer}
+              disabled={elapsedSeconds === 0 && !isTimerRunning}
+              className="timer-reset-btn"
+              title="타이머 초기화 (00:00)"
+            >
+              <RotateCcw size={13} />
+            </button>
           </div>
         </div>
       </header>
@@ -728,35 +773,29 @@ export default function ExamWorkspace({
           <span className="slash">/</span> <strong>{currentQ.tag || `2026학년도 ${currentUniv} 수시`}</strong>{' '}
           <span className="slash">/</span> {currentQ.label}
         </div>
-        <div className="exam-status">
-          <span className="status-dot" /> 자동 저장됨 <span className="divider" />{' '}
-          {(() => {
-            const keys = Object.keys(questionsData).filter(k => questionsData[k] && questionsData[k].passages)
-            const currentIdx = keys.indexOf(activeQuestion) + 1
-            return `문제 ${currentIdx > 0 ? currentIdx : 1} / ${keys.length}`
-          })()}{' '}
-          (소요 시간 120분)
-        </div>
       </div>
 
       <div className={currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl ? 'workspace pdf-mode' : 'workspace'}>
         <section className="reading-panel">
-          <div className="panel-heading">
-            <div>
-              <p className="eyebrow">
-                {currentUniv.includes('경희')
-                  ? 'KYUNG HEE UNIVERSITY · ESSAY EXAM'
-                  : currentUniv.includes('동국')
-                  ? 'DONGGUK UNIVERSITY · ESSAY EXAM'
-                  : currentUniv.includes('홍익')
-                  ? 'HONGIK UNIVERSITY · ESSAY EXAM'
-                  : `${currentUniv.toUpperCase()} · ESSAY EXAM`}
-              </p>
-              <h1>{currentQ.tag || `${currentUniv} 논술고사`}</h1>
+          {/* PDF 문제지 모드에서는 상단 context-bar와 중복되는 대학명/제목 헤더를 숨겨 세로 열람 면적을 극대화 */}
+          {!(currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl) && (
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">
+                  {currentUniv.includes('경희')
+                    ? 'KYUNG HEE UNIVERSITY · ESSAY EXAM'
+                    : currentUniv.includes('동국')
+                    ? 'DONGGUK UNIVERSITY · ESSAY EXAM'
+                    : currentUniv.includes('홍익')
+                    ? 'HONGIK UNIVERSITY · ESSAY EXAM'
+                    : `${currentUniv.toUpperCase()} · ESSAY EXAM`}
+                </p>
+                <h1>{currentQ.tag || `${currentUniv} 논술고사`}</h1>
+              </div>
             </div>
-          </div>
+          )}
           <div className="question-tabs" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', gap: '28px' }}>
+            <div style={{ display: 'flex', gap: '24px' }}>
               {Object.keys(questionsData)
                 .filter(k => questionsData[k] && questionsData[k].passages)
                 .map((qKey, idx) => {
@@ -772,130 +811,122 @@ export default function ExamWorkspace({
                   )
                 })}
             </div>
+
+            {/* PDF 문제지 모드 전용: 문제 탭 우측 한 줄에 확대/축소 및 새 창 확대 컨트롤 통합 배치 */}
+            {currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl && (
+              <div className="pdf-tab-controls">
+                {currentQ.questionPdfStartPage && currentQ.questionPdfStartPage > 1 && (
+                  <span
+                    style={{
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      color: '#2563eb',
+                      background: '#eff6ff',
+                      padding: '2px 7px',
+                      borderRadius: '9999px',
+                      border: '1px solid #bfdbfe',
+                    }}
+                  >
+                    {currentQ.questionPdfStartPage}p~
+                  </span>
+                )}
+                <div
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    borderRadius: '6px',
+                    border: '1px solid #cbd5e1',
+                    backgroundColor: '#ffffff',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={handleZoomOutPdf}
+                    disabled={pdfZoom <= PDF_ZOOM_MIN}
+                    title="PDF 5% 축소"
+                    style={{
+                      padding: '3px 8px',
+                      border: 'none',
+                      background: 'transparent',
+                      color: pdfZoom <= PDF_ZOOM_MIN ? '#cbd5e1' : '#334155',
+                      fontSize: '13px',
+                      fontWeight: 800,
+                      cursor: pdfZoom <= PDF_ZOOM_MIN ? 'not-allowed' : 'pointer',
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    −
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPdfZoom(PDF_ZOOM_DEFAULT)}
+                    title="기본 130% 크기로 초기화"
+                    style={{
+                      padding: '3px 7px',
+                      border: 'none',
+                      borderLeft: '1px solid #e2e8f0',
+                      borderRight: '1px solid #e2e8f0',
+                      background: '#f8fafc',
+                      color: '#1e3a8a',
+                      fontSize: '11px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                      minWidth: '46px',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {pdfZoom}%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleZoomInPdf}
+                    disabled={pdfZoom >= PDF_ZOOM_MAX}
+                    title="PDF 5% 확대"
+                    style={{
+                      padding: '3px 8px',
+                      border: 'none',
+                      background: 'transparent',
+                      color: pdfZoom >= PDF_ZOOM_MAX ? '#cbd5e1' : '#334155',
+                      fontSize: '13px',
+                      fontWeight: 800,
+                      cursor: pdfZoom >= PDF_ZOOM_MAX ? 'not-allowed' : 'pointer',
+                      lineHeight: 1.2,
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+
+                <a
+                  href={`${currentQ.questionPdfUrl}#page=${currentQ.questionPdfStartPage || 1}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    padding: '3px 9px',
+                    borderRadius: '6px',
+                    backgroundColor: '#eff6ff',
+                    color: '#2563eb',
+                    border: '1px solid #bfdbfe',
+                    fontSize: '11.5px',
+                    fontWeight: 700,
+                    textDecoration: 'none',
+                  }}
+                >
+                  <BookOpen size={12} />
+                  새 창 확대
+                </a>
+              </div>
+            )}
           </div>
 
           <div className="reading-scroll">
             {currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl ? (
-              /* B-1. 하이브리드 PDF 원문 뷰어 모드 (상단 도구창·좌측 썸네일 창 숨김, 문제지 면적 최대화) */
+              /* B-1. 하이브리드 PDF 원문 뷰어 모드 (별도 상단 바 제거로 문제지 세로 면적 최대화) */
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', height: '100%' }}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    flexWrap: 'wrap',
-                    gap: '6px',
-                    padding: '6px 10px',
-                    borderRadius: '8px',
-                    backgroundColor: '#f8fafc',
-                    border: '1px solid #e2e8f0',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <FileText size={14} color="#2563eb" />
-                    <strong style={{ fontSize: '12.5px', color: '#1e3a8a' }}>
-                      {currentQ.title || `【${currentQ.label}】`} 공식 문제지
-                    </strong>
-                    {currentQ.questionPdfStartPage && currentQ.questionPdfStartPage > 1 && (
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: '#2563eb', background: '#eff6ff', padding: '1px 7px', borderRadius: '9999px', border: '1px solid #bfdbfe' }}>
-                        {currentQ.questionPdfStartPage}p~
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    {/* PDF 본문 네이티브 확대/축소/가로맞춤 컨트롤 */}
-                    <div
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        borderRadius: '6px',
-                        border: '1px solid #cbd5e1',
-                        backgroundColor: '#ffffff',
-                        overflow: 'hidden',
-                      }}
-                    >
-                      <button
-                        type="button"
-                        onClick={handleZoomOutPdf}
-                        disabled={pdfZoom <= PDF_ZOOM_MIN}
-                        title="PDF 5% 축소"
-                        style={{
-                          padding: '3px 8px',
-                          border: 'none',
-                          background: 'transparent',
-                          color: pdfZoom <= PDF_ZOOM_MIN ? '#cbd5e1' : '#334155',
-                          fontSize: '13px',
-                          fontWeight: 800,
-                          cursor: pdfZoom <= PDF_ZOOM_MIN ? 'not-allowed' : 'pointer',
-                          lineHeight: 1.2,
-                        }}
-                      >
-                        −
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setPdfZoom(PDF_ZOOM_DEFAULT)}
-                        title="기본 130% 크기로 초기화"
-                        style={{
-                          padding: '3px 7px',
-                          border: 'none',
-                          borderLeft: '1px solid #e2e8f0',
-                          borderRight: '1px solid #e2e8f0',
-                          background: '#f8fafc',
-                          color: '#1e3a8a',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                          minWidth: '46px',
-                          textAlign: 'center',
-                        }}
-                      >
-                        {pdfZoom}%
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleZoomInPdf}
-                        disabled={pdfZoom >= PDF_ZOOM_MAX}
-                        title="PDF 5% 확대"
-                        style={{
-                          padding: '3px 8px',
-                          border: 'none',
-                          background: 'transparent',
-                          color: pdfZoom >= PDF_ZOOM_MAX ? '#cbd5e1' : '#334155',
-                          fontSize: '13px',
-                          fontWeight: 800,
-                          cursor: pdfZoom >= PDF_ZOOM_MAX ? 'not-allowed' : 'pointer',
-                          lineHeight: 1.2,
-                        }}
-                      >
-                        +
-                      </button>
-                    </div>
-
-                    <a
-                      href={`${currentQ.questionPdfUrl}#page=${currentQ.questionPdfStartPage || 1}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      style={{
-                        display: 'inline-flex',
-                        alignItems: 'center',
-                        gap: '4px',
-                        padding: '3px 9px',
-                        borderRadius: '6px',
-                        backgroundColor: '#eff6ff',
-                        color: '#2563eb',
-                        border: '1px solid #bfdbfe',
-                        fontSize: '11.5px',
-                        fontWeight: 700,
-                        textDecoration: 'none',
-                      }}
-                    >
-                      <BookOpen size={12} />
-                      새 창 확대
-                    </a>
-                  </div>
-                </div>
-
                 {currentQ.note && (
                   <div style={{ padding: '8px 12px', borderRadius: '8px', background: '#f8fafc', border: '1px solid #e2e8f0', fontSize: '12.5px', color: '#334155', whiteSpace: 'pre-wrap' }}>
                     {currentQ.note}
@@ -907,6 +938,7 @@ export default function ExamWorkspace({
                   <CleanPdfViewer
                     url={currentQ.questionPdfUrl}
                     startPage={currentQ.questionPdfStartPage || 1}
+                    questionKey={currentQ.id}
                     zoom={pdfZoom}
                     baseZoom={PDF_ZOOM_BASE}
                   />
@@ -974,7 +1006,6 @@ export default function ExamWorkspace({
         <section className="writing-panel">
           <div className="editor-heading">
             <div>
-              <p className="eyebrow">ANSWER SHEET · 실전 답안 에디터</p>
               <h2 className="editor-main-title">나의 답안 작성</h2>
             </div>
             <div className="editor-top-actions">
@@ -1005,7 +1036,7 @@ export default function ExamWorkspace({
                   title="답안이 실시간으로 자동 보존되고 있습니다"
                 >
                   <Check size={12} strokeWidth={2.5} />
-                  <span>실시간 자동 저장 중</span>
+                  <span>자동 저장 중</span>
                 </span>
               </div>
             </div>
@@ -1165,6 +1196,7 @@ export default function ExamWorkspace({
             </p>
           </div>
 
+          {/* 공식 채점 기준표 + (우측) 채점 프롬프트 보기 · 채점 및 리포트 보기 통합 액션 바 */}
           <div className="rubric-btn-wrap">
             <button
               type="button"
@@ -1174,7 +1206,34 @@ export default function ExamWorkspace({
             >
               <ClipboardList size={14} /> {currentQ.label} 공식 채점 기준표 보기
             </button>
+
+            <div className="rubric-right-actions">
+              {/* 관리자 전용: 채점 프롬프트 실시간 검사 및 튜닝 모달 오픈 버튼 */}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setShowPromptInspector(true)}
+                  className="admin-inspector-btn"
+                  title="현재 문항 채점 시 AI로 전송되는 프롬프트를 확인하고 즉석 튜닝합니다"
+                >
+                  <Terminal size={14} />
+                  <span>채점 프롬프트 보기</span>
+                </button>
+              )}
+              <Button className="bottom-submit-btn" onClick={handleSubmitAndGrade} disabled={isGrading}>
+                {isGrading ? <Loader2 className="animate-spin" size={15} /> : null}
+                {isGrading ? 'AI 채점 진행 중...' : '채점 및 리포트 보기'} <ArrowRight data-icon="inline-end" />
+              </Button>
+            </div>
           </div>
+
+          {/* 채점 관련 안내·경고 배너 */}
+          {gradingNotice && (
+            <div className="grading-notice-banner" style={{ marginTop: '10px' }}>
+              <AlertTriangle className="grading-notice-icon" />
+              <span>{gradingNotice}</span>
+            </div>
+          )}
 
           {/* 📝 수험생 이전 제출 및 첨삭 이력 (날짜순 정렬 카드 리스트) */}
           <SubmissionHistorySection
@@ -1189,39 +1248,6 @@ export default function ExamWorkspace({
           />
         </section>
       </div>
-
-      <footer className="bottom-bar">
-        <div className="bottom-bar-info">
-          <span className="bottom-status-dot" />
-          <strong>{currentQ.tag || `${currentUniv} 수시 논술`}</strong>
-          <span className="slash">/</span>
-          <span>{currentQ.label} 실전 답안 작성 중</span>
-        </div>
-        <div className="bottom-bar-actions">
-          {gradingNotice && (
-            <div className="grading-notice-banner">
-              <AlertTriangle className="grading-notice-icon" />
-              <span>{gradingNotice}</span>
-            </div>
-          )}
-          {/* 🔍 관리자 전용 채점 프롬프트 실시간 검사 및 즉석 튜닝 모달 오픈 버튼 */}
-          {isAdmin && (
-            <button
-              type="button"
-              onClick={() => setShowPromptInspector(true)}
-              className="admin-inspector-btn"
-              title="현재 문항 채점 시 Gemini API로 전송되는 프롬프트를 확인하고 즉석 튜닝합니다"
-            >
-              <Terminal size={14} />
-              <span>🔍 채점 프롬프트 검사 & 튜닝</span>
-            </button>
-          )}
-          <Button className="bottom-submit-btn" onClick={handleSubmitAndGrade} disabled={isGrading}>
-            {isGrading ? <Loader2 className="animate-spin" size={16} /> : null}
-            {isGrading ? 'AI 채점관 정밀 분석 진행 중...' : '답안 제출 후 정밀 채점 리포트 보기'} <ArrowRight data-icon="inline-end" />
-          </Button>
-        </div>
-      </footer>
 
       {/* 공식 모범답안 모달 */}
       <ModelAnswerModal
@@ -1252,6 +1278,10 @@ export default function ExamWorkspace({
         passages={currentQ.passages}
         rubric={currentQ.rubric}
         modelAnswer={currentQ.modelAnswer}
+        questionPdfUrl={currentQ.questionPdfUrl}
+        rawRubricText={currentQ.rawRubricText}
+        rubricPdfUrl={currentQ.rubricPdfUrl}
+        scoringSystem={currentQ.scoringSystem}
         studentAnswer={currentAnswer}
         onRunCustomGrade={handleRunCustomGrade}
         isGrading={isGrading}

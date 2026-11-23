@@ -94,7 +94,7 @@ const AuthContext = createContext<AuthContextType>({
   logout: async () => {},
   isAuthModalOpen: false,
   authModalMode: 'login',
-  allowSignup: false,
+  allowSignup: true,
   openAuthModal: () => {},
   closeAuthModal: () => {},
   isProfileModalOpen: false,
@@ -113,7 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // 로그인 / 회원가입 전역 팝업 모달 상태 및 회원가입 허용 정책 상태
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false)
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup'>('login')
-  const [allowSignup, setAllowSignup] = useState<boolean>(false)
+  const [allowSignup, setAllowSignup] = useState<boolean>(true)
   // 개인정보 수정 모달 상태
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false)
 
