@@ -23,70 +23,45 @@ import {
   Sparkles,
   Cpu,
   Scissors,
+  ArrowLeft,
+  Pencil,
 } from 'lucide-react'
 import { getUniversityTracks } from '@/lib/constants/universities'
 import type { QuestionScoringSystem } from '@/lib/exam-helper'
+import {
+  type DraftPdfQuestion,
+  type ExtractedScoringData,
+  createEmptyDraftQuestion,
+} from './pdf-uploader/types'
+import PdfQuestionGroupSection from './pdf-uploader/PdfQuestionGroupSection'
+import PdfExtraTabsPreview from './pdf-uploader/PdfExtraTabsPreview'
 
 interface PdfExamUploaderProps {
   selectedUniv: string
   univName: string
+  /** 기존 시험을 불러와 수정 모드로 열 때 사용하는 시험 ID */
+  editExamId?: string | null
+  /** 수정 완료 후 되돌아갈 문제보기 페이지 URL */
+  returnToExamUrl?: string | null
+  /** 수정 모드를 종료하고 신규 등록 모드로 전환하는 콜백 */
+  onCancelEdit?: () => void
   onDataSaved: () => void
   showNotice: (type: 'success' | 'error', text: string) => void
 }
 
-interface DraftPdfQuestion {
-  label: string
-  limit: string
-  note: string
-  // 문항별 개별 PDF 또는 통합 PDF 시작 페이지
-  questionPdfUrl: string
-  questionPdfName: string
-  questionPdfStartPage: number
-  // 대학 고유 채점 체계
-  scoringType: 'score' | 'grade' | 'both'
-  maxScore: number
-  gradeScaleText: string
-  cutlineLabel: string
-  // 대학 공식 채점기준 (텍스트 & PDF 모두 지원)
-  rawRubricText: string
-  rubricPdfUrl: string
-  rubricPdfName: string
-  // 공식 예시답안 (선택)
-  modelAnswer: string
-}
-
-// 자주 쓰는 대학별 등급 체계 프리셋
-const GRADE_SCALE_PRESETS = [
-  { label: 'A+~F (외대 등)', value: 'A+, A, B+, B, C+, C, D, F' },
-  { label: 'S/A/B/C/D (동국대 등)', value: 'S, A, B, C, D' },
-  { label: '상/중상/중/중하/하', value: '상, 중상, 중, 중하, 하' },
-  { label: 'A/B/C/D/E', value: 'A, B, C, D, E' },
-]
-
-const createEmptyDraftQuestion = (index: number): DraftPdfQuestion => ({
-  label: `문제 ${index + 1}`,
-  limit: '800±100자',
-  note: '',
-  questionPdfUrl: '',
-  questionPdfName: '',
-  questionPdfStartPage: index + 1,
-  scoringType: 'both',
-  maxScore: 50,
-  gradeScaleText: 'A+, A, B+, B, C, D, F',
-  cutlineLabel: '100점 환산 82점 이상',
-  rawRubricText: '',
-  rubricPdfUrl: '',
-  rubricPdfName: '',
-  modelAnswer: '',
-})
-
 export default function PdfExamUploader({
   selectedUniv,
   univName,
+  editExamId,
+  returnToExamUrl,
+  onCancelEdit,
   onDataSaved,
   showNotice,
 }: PdfExamUploaderProps) {
   const defaultTracks = getUniversityTracks(selectedUniv)
+  const isEditMode = Boolean(editExamId)
+  const [isLoadingEditExam, setIsLoadingEditExam] = useState<boolean>(false)
+  const [slicingQuestionKey, setSlicingQuestionKey] = useState<string | null>(null)
 
   // 1. 시험 기본 메타데이터 상태
   const [year, setYear] = useState<string>('2026학년도')
@@ -105,6 +80,20 @@ export default function PdfExamUploader({
   const [selectedAiModel, setSelectedAiModel] = useState<string>('gemini-3.1-pro-preview')
   const [aiInstruction, setAiInstruction] = useState<string>('')
   const [isAnalyzingPdf, setIsAnalyzingPdf] = useState<boolean>(false)
+  // 2-1-B. AI 추출 대상 선택 (1·2단계 문항 / 대학 페이지 '출제 경향(tab2)' & '채점 기준(tab3)')
+  // 수정 모드 진입 시 기존 문항 덮어쓰기를 방지하기 위해 includeQuestions는 기본 해제(false)
+  const [includeQuestions, setIncludeQuestions] = useState<boolean>(!editExamId)
+  const [includeTrends, setIncludeTrends] = useState<boolean>(true)
+  const [includeScoring, setIncludeScoring] = useState<boolean>(true)
+  const [extractedTrends, setExtractedTrends] = useState<any[]>([])
+  const [extractedScoring, setExtractedScoring] = useState<{ scoringRules: any[]; rubrics: any[] } | null>(null)
+  const [saveTrendsWithExam, setSaveTrendsWithExam] = useState<boolean>(true)
+  const [saveScoringWithExam, setSaveScoringWithExam] = useState<boolean>(true)
+  const [isSavingTabsOnly, setIsSavingTabsOnly] = useState<boolean>(false)
+
+  React.useEffect(() => {
+    setIncludeQuestions(!editExamId)
+  }, [editExamId])
 
   // 2-2. 「2. 문항 및 제시문」 페이지만 자동 분리 + 반복 배경 학교 로고 워터마크 제거 상태
   const [sliceStartPage, setSliceStartPage] = useState<number>(1)
@@ -121,11 +110,214 @@ export default function PdfExamUploader({
   const [uploadingKey, setUploadingKey] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState<boolean>(false)
 
-  // 대학 변경 시 계열 기본값 동기화
+  // 대학 변경 시 계열 기본값 동기화 (수정 모드 로드 중에는 기존 시험의 계열 유지)
   React.useEffect(() => {
+    if (editExamId) return
     const tracks = getUniversityTracks(selectedUniv)
     setTargetFaculty(tracks[0] || '인문계열 (공통)')
-  }, [selectedUniv])
+  }, [selectedUniv, editExamId])
+
+  // ✏️ 수정 모드: editExamId가 전달되면 Supabase DB에서 기존 시험 데이터를 자동 로드해 폼에 채움
+  React.useEffect(() => {
+    if (!editExamId) return
+    let cancelled = false
+    setIsLoadingEditExam(true)
+    fetch(`/api/admin/exams?id=${encodeURIComponent(editExamId)}`, { cache: 'no-store' })
+      .then((res) => res.json())
+      .then((result) => {
+        if (cancelled) return
+        if (!result.success || !result.exam) {
+          showNotice('error', result.error || '수정할 시험 데이터를 불러오지 못했습니다.')
+          return
+        }
+        const exam = result.exam
+        setYear(exam.year || '2026학년도')
+        if (exam.type === '기출문제' || exam.type === '모의논술' || exam.type === '예상문제') {
+          setExamType(exam.type)
+        }
+        if (exam.target_faculty) setTargetFaculty(exam.target_faculty)
+        setTitle(exam.title || '')
+        setTotalTime(Number(exam.total_time) || 100)
+        setSummary(exam.summary || '')
+        const topPdfUrl = exam.pdf_url || ''
+        const topPdfName = exam.pdf_name || (topPdfUrl ? '등록된 통합 문제지.pdf' : '')
+        setSharedPdfUrl(topPdfUrl)
+        setSharedPdfName(topPdfName)
+        setIsPdfSliced(false)
+
+        // 저장된 questions(객체 { q1, q2... } 또는 배열)를 DraftPdfQuestion[]로 복원
+        const rawQs = exam.questions
+        const qList: any[] = Array.isArray(rawQs)
+          ? rawQs
+          : rawQs && typeof rawQs === 'object'
+          ? Object.keys(rawQs)
+              .sort((a, b) => {
+                const na = Number(a.replace(/[^0-9]/g, '')) || 0
+                const nb = Number(b.replace(/[^0-9]/g, '')) || 0
+                return na - nb
+              })
+              .map((k) => rawQs[k])
+              .filter(Boolean)
+          : []
+
+        if (qList.length > 0) {
+          const restored: DraftPdfQuestion[] = qList.map((q, idx) => {
+            const qPdfUrl = q.questionPdfUrl || ''
+            // 문항 PDF가 상단 통합 PDF와 완전히 동일하면 개별 PDF 필드는 비우고 통합 PDF + 시작 페이지로 관리
+            const hasDedicatedPdf = Boolean(qPdfUrl && qPdfUrl !== topPdfUrl)
+            const sSys = q.scoringSystem || {}
+            const sType: 'score' | 'grade' | 'both' =
+              sSys.type === 'score' || sSys.type === 'grade' || sSys.type === 'both' ? sSys.type : 'both'
+            const startPage = Math.max(1, Number(q.questionPdfStartPage) || 1)
+            return {
+              label: q.label || `문제 ${idx + 1}`,
+              limit: q.limit || '800±100자',
+              note: q.note || '',
+              questionPdfUrl: hasDedicatedPdf ? qPdfUrl : '',
+              questionPdfName: hasDedicatedPdf ? q.questionPdfName || `문항_${idx + 1}.pdf` : '',
+              questionPdfStartPage: startPage,
+              sliceFromPage: startPage,
+              sliceToPage: startPage,
+              scoringType: sType,
+              maxScore: Number(sSys.maxScore ?? q.points) || 50,
+              gradeScaleText: Array.isArray(sSys.gradeScale)
+                ? sSys.gradeScale.join(', ')
+                : 'A+, A, B+, B, C, D, F',
+              cutlineLabel: sSys.cutlineLabel || '100점 환산 82점 이상',
+              rawRubricText: q.rawRubricText || '',
+              rubricPdfUrl: q.rubricPdfUrl || '',
+              rubricPdfName: q.rubricPdfName || '',
+              modelAnswer: q.modelAnswer || '',
+            }
+          })
+          setQuestions(restored)
+        }
+        showNotice('success', `✏️ "${exam.title}" 시험을 수정 모드로 불러왔습니다. 수정 후 하단 저장 버튼을 눌러주세요.`)
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          showNotice('error', err?.message || '시험 데이터 로드 중 오류가 발생했습니다.')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingEditExam(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [editExamId])
+
+  // 대문항 그룹 내 모든 소문항 일괄 업데이트 헬퍼
+  const updateGroupQuestions = (indices: number[], patch: Partial<DraftPdfQuestion>) => {
+    const idxSet = new Set(indices)
+    setQuestions((prev) => prev.map((q, idx) => (idxSet.has(idx) ? { ...q, ...patch } : q)))
+  }
+
+  // 대문항 그룹 공통 개별 PDF 업로드 (1회 업로드로 하위 소문항 전체에 자동 동기화)
+  const handleUploadGroupPdf = async (
+    groupKey: string,
+    groupTitle: string,
+    indices: number[],
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+
+    const key = `group-pdf-${groupKey}`
+    setUploadingKey(key)
+    try {
+      const uploaded = await uploadPdfFile(file)
+      updateGroupQuestions(indices, {
+        questionPdfUrl: uploaded.url,
+        questionPdfName: uploaded.name,
+        questionPdfStartPage: 1,
+      })
+      showNotice(
+        'success',
+        `📄 ${groupTitle} 공통 문제지 PDF("${uploaded.name}")가 하위 ${indices.length}개 소문항에 일괄 적용되었습니다!`
+      )
+    } catch (err: any) {
+      showNotice('error', err.message || 'PDF 업로드 실패')
+    } finally {
+      setUploadingKey(null)
+    }
+  }
+
+  // 대문항 그룹에 하위 소문항 추가 (예: 문제 1-1, 1-2 아래에 문제 1-3 자동 추가 + 공통 PDF 상속)
+  const handleAddSubQuestion = (majorNum: number, groupIndices: number[]) => {
+    const lastIdx = groupIndices[groupIndices.length - 1]
+    const leader = questions[groupIndices[0]]
+    const nextMinor = groupIndices.length + 1
+    const newSub: DraftPdfQuestion = {
+      ...createEmptyDraftQuestion(questions.length),
+      label: `문제 ${majorNum}-${nextMinor}`,
+      questionPdfUrl: leader?.questionPdfUrl || '',
+      questionPdfName: leader?.questionPdfName || '',
+      questionPdfStartPage: leader?.questionPdfStartPage || 1,
+      sliceFromPage: leader?.sliceFromPage ?? leader?.questionPdfStartPage ?? 1,
+      sliceToPage: leader?.sliceToPage ?? leader?.questionPdfStartPage ?? 1,
+      scoringType: leader?.scoringType || 'both',
+      gradeScaleText: leader?.gradeScaleText || 'A+, A, B+, B, C, D, F',
+    }
+    setQuestions((prev) => [
+      ...prev.slice(0, lastIdx + 1),
+      newSub,
+      ...prev.slice(lastIdx + 1),
+    ])
+  }
+
+  // ✂️ 특정 문항(또는 대문항 그룹 전체)만 상단 통합 PDF에서 원하는 페이지 범위(시작p~끝p)로 개별 분할
+  const handleSliceTargetPdf = async (
+    targetKey: string,
+    targetTitle: string,
+    indices: number[]
+  ) => {
+    if (!sharedPdfUrl) {
+      showNotice('error', '먼저 1단계에 원본/통합 PDF를 업로드해 주세요.')
+      return
+    }
+    const leader = questions[indices[0]]
+    const fromP = Math.max(1, Number(leader?.sliceFromPage) || Number(leader?.questionPdfStartPage) || 1)
+    const toP = Math.max(fromP, Number(leader?.sliceToPage) || fromP)
+
+    setSlicingQuestionKey(targetKey)
+    try {
+      const res = await fetch('/api/admin/slice-pdf-exam', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pdfUrl: sharedPdfUrl,
+          startPage: fromP,
+          endPage: toP,
+          removeWatermark,
+          univId: selectedUniv,
+          fileLabel: `${selectedUniv}_${year}_${targetKey}`,
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success || !data.url) {
+        throw new Error(data.error || '문항별 PDF 페이지 분리에 실패했습니다.')
+      }
+      updateGroupQuestions(indices, {
+        questionPdfUrl: data.url,
+        questionPdfName: `[${targetTitle} p.${data.startPage}~${data.endPage}] ${sharedPdfName || '문제지.pdf'}`,
+        questionPdfStartPage: 1,
+        sliceFromPage: data.startPage,
+        sliceToPage: data.endPage,
+      })
+      showNotice(
+        'success',
+        `✂️ ${targetTitle}의 ${data.startPage}p ~ ${data.endPage}p(총 ${data.pageCount}페이지)를 분리하여 ${
+          indices.length > 1 ? `하위 ${indices.length}개 소문항에 일괄 적용` : '적용'
+        }했습니다!`
+      )
+    } catch (err: any) {
+      showNotice('error', err.message || '문항별 PDF 페이지 분리 중 오류가 발생했습니다.')
+    } finally {
+      setSlicingQuestionKey(null)
+    }
+  }
 
   // 공용 PDF 업로드 헬퍼 (Supabase Storage exam-assets 버킷 저장)
   const uploadPdfFile = async (file: File): Promise<{ url: string; name: string }> => {
@@ -164,10 +356,14 @@ export default function PdfExamUploader({
     }
   }
 
-  // ✨ 업로드된 통합 PDF를 AI로 자동 분석하여 1단계 메타데이터 및 2단계 문항·채점기준·예시답안 자동 채우기
+  // ✨ 업로드된 통합 PDF를 AI로 자동 분석하여 선택한 항목(1·2단계 문항 / 출제 경향 / 채점 기준)만 자동 채우기
   const handleAnalyzeSharedPdf = async () => {
     if (!sharedPdfUrl) {
       showNotice('error', '먼저 통합 문제지/보고서 PDF를 업로드해 주세요.')
+      return
+    }
+    if (!includeQuestions && !includeTrends && !includeScoring) {
+      showNotice('error', '최소 1개 이상의 추출 대상(문항 / 출제 경향 / 채점 기준)을 체크해 주세요.')
       return
     }
 
@@ -183,6 +379,9 @@ export default function PdfExamUploader({
           targetFaculty,
           customInstruction: aiInstruction.trim(),
           model: selectedAiModel,
+          includeQuestions,
+          includeTrends,
+          includeScoring,
         }),
       })
 
@@ -192,56 +391,88 @@ export default function PdfExamUploader({
       }
 
       const parsed = result.data
-      if (parsed.year) setYear(String(parsed.year))
-      if (parsed.type === '기출문제' || parsed.type === '모의논술' || parsed.type === '예상문제') {
-        setExamType(parsed.type)
-      }
-      if (parsed.title) setTitle(String(parsed.title))
-      if (parsed.totalTime && Number(parsed.totalTime) > 0) setTotalTime(Number(parsed.totalTime))
-      if (parsed.summary) setSummary(String(parsed.summary))
-      if (parsed.problemSectionStartPage && Number(parsed.problemSectionStartPage) > 0) {
-        setSliceStartPage(Number(parsed.problemSectionStartPage))
-      }
-      if (parsed.problemSectionEndPage && Number(parsed.problemSectionEndPage) > 0) {
-        setSliceEndPage(Number(parsed.problemSectionEndPage))
+
+      // includeQuestions가 체크된 경우에만 1단계 메타정보 및 2단계 문항 목록을 갱신 (미체크 시 기존 문항 100% 보존)
+      if (includeQuestions) {
+        if (parsed.year) setYear(String(parsed.year))
+        if (parsed.type === '기출문제' || parsed.type === '모의논술' || parsed.type === '예상문제') {
+          setExamType(parsed.type)
+        }
+        if (parsed.title) setTitle(String(parsed.title))
+        if (parsed.totalTime && Number(parsed.totalTime) > 0) setTotalTime(Number(parsed.totalTime))
+        if (parsed.summary) setSummary(String(parsed.summary))
+        if (parsed.problemSectionStartPage && Number(parsed.problemSectionStartPage) > 0) {
+          setSliceStartPage(Number(parsed.problemSectionStartPage))
+        }
+        if (parsed.problemSectionEndPage && Number(parsed.problemSectionEndPage) > 0) {
+          setSliceEndPage(Number(parsed.problemSectionEndPage))
+        }
+
+        if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+          const mapped: DraftPdfQuestion[] = parsed.questions.map((q: any, idx: number) => {
+            const sType: 'score' | 'grade' | 'both' =
+              q.scoringType === 'grade' || q.scoringType === 'score' || q.scoringType === 'both'
+                ? q.scoringType
+                : 'both'
+            const gScale = Array.isArray(q.gradeScale)
+              ? q.gradeScale.join(', ')
+              : typeof q.gradeScale === 'string'
+              ? q.gradeScale
+              : 'A+, A0, A-, B+, B0, B-, C, D, F'
+
+            return {
+              label: q.label || `문제 ${idx + 1}`,
+              limit: q.limit || '800±100자',
+              note: '',
+              questionPdfUrl: '',
+              questionPdfName: '',
+              questionPdfStartPage: Math.max(1, Number(q.questionPdfStartPage) || idx + 1),
+              scoringType: sType,
+              maxScore: Number(q.maxScore) || 100,
+              gradeScaleText: gScale,
+              cutlineLabel: '100점 환산 82점 이상',
+              rawRubricText: q.rawRubricText || '',
+              rubricPdfUrl: '',
+              rubricPdfName: '',
+              modelAnswer: q.modelAnswer || '',
+            }
+          })
+          setQuestions(mapped)
+        }
       }
 
-      if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
-        const mapped: DraftPdfQuestion[] = parsed.questions.map((q: any, idx: number) => {
-          const sType: 'score' | 'grade' | 'both' =
-            q.scoringType === 'grade' || q.scoringType === 'score' || q.scoringType === 'both'
-              ? q.scoringType
-              : 'both'
-          const gScale = Array.isArray(q.gradeScale)
-            ? q.gradeScale.join(', ')
-            : typeof q.gradeScale === 'string'
-            ? q.gradeScale
-            : 'A+, A0, A-, B+, B0, B-, C, D, F'
-
-          return {
-            label: q.label || `문제 ${idx + 1}`,
-            limit: q.limit || '800±100자',
-            note: '',
-            questionPdfUrl: '',
-            questionPdfName: '',
-            questionPdfStartPage: Math.max(1, Number(q.questionPdfStartPage) || idx + 1),
-            scoringType: sType,
-            maxScore: Number(q.maxScore) || 100,
-            gradeScaleText: gScale,
-            cutlineLabel: '100점 환산 82점 이상',
-            rawRubricText: q.rawRubricText || '',
-            rubricPdfUrl: '',
-            rubricPdfName: '',
-            modelAnswer: q.modelAnswer || '',
-          }
+      // 대학 상세 페이지 '출제 경향(tab2)' 및 '채점 기준(tab3)' 추출 결과 반영
+      const summaryParts: string[] = []
+      if (includeQuestions) {
+        summaryParts.push(`문항 ${parsed.questions?.length || 0}개`)
+      }
+      if (includeTrends && Array.isArray(parsed.tab2_trends) && parsed.tab2_trends.length > 0) {
+        setExtractedTrends(parsed.tab2_trends)
+        setSaveTrendsWithExam(true)
+        summaryParts.push(`출제 경향 ${parsed.tab2_trends.length}건`)
+      }
+      if (
+        includeScoring &&
+        parsed.tab3_scoring &&
+        ((Array.isArray(parsed.tab3_scoring.scoringRules) && parsed.tab3_scoring.scoringRules.length > 0) ||
+          (Array.isArray(parsed.tab3_scoring.rubrics) && parsed.tab3_scoring.rubrics.length > 0))
+      ) {
+        setExtractedScoring({
+          scoringRules: Array.isArray(parsed.tab3_scoring.scoringRules) ? parsed.tab3_scoring.scoringRules : [],
+          rubrics: Array.isArray(parsed.tab3_scoring.rubrics) ? parsed.tab3_scoring.rubrics : [],
         })
-        setQuestions(mapped)
+        setSaveScoringWithExam(true)
+        summaryParts.push(
+          `채점 기준(${parsed.tab3_scoring.scoringRules?.length || 0}규칙/${parsed.tab3_scoring.rubrics?.length || 0}루브릭)`
+        )
       }
 
       const usedModelLabel = result.modelUsed ? ` (사용 모델: ${result.modelUsed})` : ''
       showNotice(
         'success',
-        `✨ AI가 PDF를 분석하여 ${parsed.questions?.length || 0}개 문항의 배점·등급표·채점기준·예시답안을 2단계에 자동 입력했습니다! 검토 후 저장해 주세요.${usedModelLabel}`
+        `✨ AI 분석 완료: [${summaryParts.join(' · ')}]${
+          !includeQuestions ? ' (기존 2단계 문항은 변경하지 않고 보존됨)' : ''
+        } — 검토 후 저장해 주세요.${usedModelLabel}`
       )
     } catch (err: any) {
       showNotice('error', err.message || 'PDF AI 자동 분석 중 오류가 발생했습니다.')
@@ -435,7 +666,7 @@ export default function PdfExamUploader({
           displayMode: 'pdf',
           questionPdfUrl: effectivePdfUrl,
           questionPdfName: effectivePdfName,
-          questionPdfStartPage: q.questionPdfUrl ? 1 : Math.max(1, Number(q.questionPdfStartPage) || 1),
+          questionPdfStartPage: Math.max(1, Number(q.questionPdfStartPage) || 1),
           rawRubricText: q.rawRubricText.trim(),
           rubricPdfUrl: q.rubricPdfUrl,
           rubricPdfName: q.rubricPdfName,
@@ -453,9 +684,10 @@ export default function PdfExamUploader({
       })
 
       const res = await fetch('/api/admin/exams', {
-        method: 'POST',
+        method: isEditMode ? 'PUT' : 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          ...(isEditMode && editExamId ? { id: editExamId } : {}),
           univ_id: selectedUniv,
           year: year.trim() || '2026학년도',
           title: finalTitle,
@@ -478,15 +710,61 @@ export default function PdfExamUploader({
         throw new Error(data.error || 'PDF 시험 저장에 실패했습니다.')
       }
 
-      showNotice(
-        'success',
-        `🎉 "${finalTitle}"이(가) PDF 원문 + 대학 고유 채점기준 모드로 Supabase DB에 저장되었습니다!`
-      )
-      setTitle('')
-      setSummary('')
-      setSharedPdfUrl('')
-      setSharedPdfName('')
-      setQuestions([createEmptyDraftQuestion(0), createEmptyDraftQuestion(1)])
+      // 3단계: AI가 생성한 대학 페이지 '출제 경향(tab2)' · '채점 기준(tab3)' 함께 DB 저장
+      const shouldSaveTab2 = saveTrendsWithExam && extractedTrends.length > 0
+      const shouldSaveTab3 =
+        saveScoringWithExam &&
+        Boolean(
+          extractedScoring &&
+            (extractedScoring.scoringRules.length > 0 || extractedScoring.rubrics.length > 0)
+        )
+
+      let extraSavedMsg = ''
+      if (shouldSaveTab2 || shouldSaveTab3) {
+        const tabsRes = await fetch('/api/admin/save-all-tabs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            univId: selectedUniv,
+            univName,
+            targetFaculty,
+            tab2_trends: shouldSaveTab2 ? extractedTrends : [],
+            tab3_scoring: shouldSaveTab3 ? extractedScoring : {},
+            selectedTabs: {
+              tab1: false,
+              tab2: shouldSaveTab2,
+              tab3: shouldSaveTab3,
+            },
+          }),
+        })
+        const tabsData = await tabsRes.json()
+        if (!tabsRes.ok || !tabsData.success) {
+          throw new Error(tabsData.error || '출제 경향 / 채점 기준 탭 저장에 실패했습니다.')
+        }
+        const savedParts: string[] = []
+        if (shouldSaveTab2) savedParts.push('출제 경향')
+        if (shouldSaveTab3) savedParts.push('채점 기준')
+        extraSavedMsg = ` (${savedParts.join(' · ')} 탭 함께 반영 완료!)`
+      }
+
+      if (isEditMode) {
+        showNotice(
+          'success',
+          `✅ "${finalTitle}" 수정 사항이 Supabase DB에 즉시 반영되었습니다!${extraSavedMsg}`
+        )
+      } else {
+        showNotice(
+          'success',
+          `🎉 "${finalTitle}"이(가) PDF 원문 + 대학 고유 채점기준 모드로 Supabase DB에 저장되었습니다!${extraSavedMsg}`
+        )
+        setTitle('')
+        setSummary('')
+        setSharedPdfUrl('')
+        setSharedPdfName('')
+        setQuestions([createEmptyDraftQuestion(0), createEmptyDraftQuestion(1)])
+        setExtractedTrends([])
+        setExtractedScoring(null)
+      }
       onDataSaved()
     } catch (err: any) {
       showNotice('error', err.message || '저장 중 오류가 발생했습니다.')
@@ -495,14 +773,152 @@ export default function PdfExamUploader({
     }
   }
 
+  // 💾 기출시험(exams)은 건드리지 않고, 3단계 '출제 경향' · '채점 기준' 탭만 Supabase DB에 단독 저장
+  const handleSaveTabsOnly = async () => {
+    const shouldSaveTab2 = saveTrendsWithExam && extractedTrends.length > 0
+    const shouldSaveTab3 =
+      saveScoringWithExam &&
+      Boolean(
+        extractedScoring &&
+          (extractedScoring.scoringRules.length > 0 || extractedScoring.rubrics.length > 0)
+      )
+
+    if (!shouldSaveTab2 && !shouldSaveTab3) {
+      showNotice('error', '저장할 출제 경향 또는 채점 기준 항목이 선택되어 있지 않습니다.')
+      return
+    }
+
+    setIsSavingTabsOnly(true)
+    try {
+      const tabsRes = await fetch('/api/admin/save-all-tabs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          univId: selectedUniv,
+          univName,
+          targetFaculty,
+          tab2_trends: shouldSaveTab2 ? extractedTrends : [],
+          tab3_scoring: shouldSaveTab3 ? extractedScoring : {},
+          selectedTabs: {
+            tab1: false,
+            tab2: shouldSaveTab2,
+            tab3: shouldSaveTab3,
+          },
+        }),
+      })
+      const tabsData = await tabsRes.json()
+      if (!tabsRes.ok || !tabsData.success) {
+        throw new Error(tabsData.error || '출제 경향 / 채점 기준 저장에 실패했습니다.')
+      }
+      const savedParts: string[] = []
+      if (shouldSaveTab2) savedParts.push('출제 경향')
+      if (shouldSaveTab3) savedParts.push('채점 기준')
+      showNotice(
+        'success',
+        `✅ 기존 문항은 건드리지 않고 ${univName} 대학 페이지의 [${savedParts.join(' · ')}] 탭만 DB에 저장했습니다!`
+      )
+      onDataSaved()
+    } catch (err: any) {
+      showNotice('error', err.message || '대학 페이지 탭 저장 중 오류가 발생했습니다.')
+    } finally {
+      setIsSavingTabsOnly(false)
+    }
+  }
+
   return (
     <section className="animate-fadeIn" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      {/* ✏️ 기존 시험 수정 모드 전용 상단 배너 */}
+      {isEditMode && (
+        <div
+          className="admin-card"
+          style={{
+            background: 'linear-gradient(90deg, #fefce8 0%, #eff6ff 100%)',
+            border: '2px solid #f59e0b',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Pencil size={18} color="#b45309" />
+            <div>
+              <strong style={{ fontSize: '14.5px', color: '#92400e', display: 'block' }}>
+                {isLoadingEditExam
+                  ? '기존 시험 데이터를 불러오는 중...'
+                  : `✏️ 수정 모드: ${title || editExamId}`}
+              </strong>
+              <span style={{ fontSize: '12px', color: '#78350f' }}>
+                저장 시 새 시험을 만들지 않고 기존 시험(ID: <code>{editExamId}</code>)을 그대로 업데이트합니다.
+              </span>
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              onClick={() => {
+                const targetUrl =
+                  returnToExamUrl ||
+                  `/?view=exam&univ=${encodeURIComponent(selectedUniv)}&exam=${encodeURIComponent(editExamId || '')}`
+                window.location.href = targetUrl
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '5px',
+                padding: '7px 13px',
+                borderRadius: '8px',
+                border: '1px solid #93c5fd',
+                background: '#ffffff',
+                color: '#1d4ed8',
+                fontSize: '12.5px',
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              <ArrowLeft size={14} />
+              문제보기 페이지로 돌아가기
+            </button>
+            {onCancelEdit && (
+              <button
+                type="button"
+                onClick={() => {
+                  setTitle('')
+                  setSummary('')
+                  setSharedPdfUrl('')
+                  setSharedPdfName('')
+                  setQuestions([createEmptyDraftQuestion(0), createEmptyDraftQuestion(1)])
+                  onCancelEdit()
+                }}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  padding: '7px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #cbd5e1',
+                  background: '#ffffff',
+                  color: '#475569',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                <Plus size={13} />
+                새 시험 등록으로 전환
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* 상단 안내 카드 */}
       <div className="admin-card" style={{ background: 'linear-gradient(180deg, #eff6ff 0%, #ffffff 100%)', border: '1px solid #bfdbfe' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
           <FileText size={20} color="#2563eb" />
           <h3 style={{ margin: 0, fontSize: '17px', fontWeight: 800, color: '#0f172a' }}>
-            {univName} PDF 원문 간편 등록 (도표 편집 없음 · 대학 고유 채점기준 그대로 적용)
+            {univName} PDF 원문 통합 {isEditMode ? '수정' : '등록'} (도표 편집 없음 · 대학 고유 채점기준 그대로 적용)
           </h3>
         </div>
         <p style={{ margin: 0, fontSize: '13px', color: '#475569', lineHeight: 1.6 }}>
@@ -701,6 +1117,41 @@ export default function PdfExamUploader({
               style={{ fontSize: '12.5px', background: '#ffffff', resize: 'vertical' }}
             />
 
+            {/* AI 추출 대상 체크박스 (문항은 이미 등록된 경우 해제하여 기존 2단계 문항을 100% 보존 가능) */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap', padding: '7px 10px', borderRadius: '7px', background: '#ffffff', border: '1px solid #dcfce7' }}>
+              <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#166534' }}>AI 추출 대상:</span>
+              <label
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 700, color: includeQuestions ? '#1e3a8a' : '#64748b', cursor: 'pointer' }}
+                title="체크 해제 시 기존 1·2단계 문항/PDF 설정을 덮어쓰지 않고 그대로 보존합니다"
+              >
+                <input
+                  type="checkbox"
+                  checked={includeQuestions}
+                  onChange={(e) => setIncludeQuestions(e.target.checked)}
+                  disabled={isAnalyzingPdf}
+                />
+                1·2단계 문항·채점기준·예시답안
+              </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 700, color: '#334155', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={includeTrends}
+                  onChange={(e) => setIncludeTrends(e.target.checked)}
+                  disabled={isAnalyzingPdf}
+                />
+                출제 경향 및 유형 분석
+              </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 700, color: '#334155', cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={includeScoring}
+                  onChange={(e) => setIncludeScoring(e.target.checked)}
+                  disabled={isAnalyzingPdf}
+                />
+                채점 기준 및 배점 체계
+              </label>
+            </div>
+
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
                 <span style={{ fontSize: '11px', fontWeight: 700, color: '#64748b' }}>빠른 지시:</span>
@@ -751,7 +1202,11 @@ export default function PdfExamUploader({
                 }}
               >
                 {isAnalyzingPdf ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                {isAnalyzingPdf ? 'AI가 PDF를 분석해 2단계를 채우는 중...' : '✨ 업로드된 PDF AI 자동 분석 & 2단계 채우기'}
+                {isAnalyzingPdf
+                  ? 'AI가 선택한 항목을 분석하는 중...'
+                  : includeQuestions
+                  ? '✨ 선택한 항목 AI 자동 분석 & 채우기'
+                  : '✨ 출제 경향 · 채점 기준만 AI 추출'}
               </button>
             </div>
 
@@ -811,295 +1266,137 @@ export default function PdfExamUploader({
                 </label>
               </div>
 
-              <button
-                type="button"
-                onClick={handleSliceProblemPages}
-                disabled={isSlicingPdf}
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '5px',
-                  padding: '7px 13px',
-                  borderRadius: '7px',
-                  border: 'none',
-                  background: isPdfSliced ? '#1e40af' : '#2563eb',
-                  color: '#ffffff',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: isSlicingPdf ? 'wait' : 'pointer',
-                  opacity: isSlicingPdf ? 0.7 : 1,
-                }}
-              >
-                {isSlicingPdf ? <Loader2 size={13} className="animate-spin" /> : <Scissors size={13} />}
-                {isSlicingPdf ? '문제지 분리 및 로고 제거 중...' : isPdfSliced ? '✓ 분리 완료 (다시 분리)' : '✂️ 문제지 페이지만 자동 분리 & 교체'}
-              </button>
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  onClick={handleSliceProblemPages}
+                  disabled={isSlicingPdf || isUploadingSharedPdf}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    padding: '7px 13px',
+                    borderRadius: '7px',
+                    border: 'none',
+                    background: isPdfSliced ? '#1e40af' : '#2563eb',
+                    color: '#ffffff',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: isSlicingPdf ? 'wait' : 'pointer',
+                    opacity: isSlicingPdf ? 0.7 : 1,
+                  }}
+                >
+                  {isSlicingPdf ? <Loader2 size={13} className="animate-spin" /> : <Scissors size={13} />}
+                  {isSlicingPdf ? '문제지 분리 및 로고 제거 중...' : isPdfSliced ? '✓ 분리 완료 (다시 분리)' : '✂️ 문제지 페이지만 자동 분리 & 교체'}
+                </button>
+
+                {/* 잘못 분할된 PDF를 올바르게 편집된 PDF 파일로 즉시 교체 업로드하는 버튼 */}
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '5px',
+                    padding: '7px 12px',
+                    borderRadius: '7px',
+                    border: '1px solid #93c5fd',
+                    background: '#ffffff',
+                    color: '#1d4ed8',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: isUploadingSharedPdf ? 'wait' : 'pointer',
+                    opacity: isUploadingSharedPdf ? 0.7 : 1,
+                  }}
+                  title="잘못 분할된 문제지 대신 올바르게 편집된 PDF 파일을 새로 업로드하여 교체합니다"
+                >
+                  <input
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    style={{ display: 'none' }}
+                    disabled={isUploadingSharedPdf || isSlicingPdf}
+                    onChange={handleUploadSharedPdf}
+                  />
+                  {isUploadingSharedPdf ? <Loader2 size={13} className="animate-spin" /> : <UploadCloud size={13} />}
+                  {isUploadingSharedPdf ? '업로드 중...' : '새로 등록'}
+                </label>
+              </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* 2단계: 문항별 PDF · 대학 고유 채점기준 구성 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h4 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#0f172a', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <ClipboardList size={16} color="#2563eb" />
-            2단계. 문항별 문제지 PDF 및 대학 고유 채점기준 ({questions.length}문항)
-          </h4>
-          <button
-            type="button"
-            onClick={handleAddQuestion}
-            className="admin-btn-secondary"
-            style={{ fontSize: '12.5px', fontWeight: 700 }}
-          >
-            <Plus size={14} /> 문항 추가
-          </button>
-        </div>
+      {/* 2단계: 대문항 공통 PDF · 소문항별 대학 고유 채점기준 구성 */}
+      <PdfQuestionGroupSection
+        questions={questions}
+        sharedPdfUrl={sharedPdfUrl}
+        uploadingKey={uploadingKey}
+        slicingQuestionKey={slicingQuestionKey}
+        onAddQuestion={handleAddQuestion}
+        onRemoveQuestion={handleRemoveQuestion}
+        onUpdateQuestion={updateQuestion}
+        onUpdateGroupQuestions={updateGroupQuestions}
+        onAddSubQuestion={handleAddSubQuestion}
+        onUploadQuestionPdf={handleUploadQuestionPdf}
+        onUploadGroupPdf={handleUploadGroupPdf}
+        onSliceTargetPdf={handleSliceTargetPdf}
+      />
 
-        {questions.map((q, qIdx) => (
-          <div
-            key={qIdx}
-            className="admin-card"
-            style={{ border: '1px solid #cbd5e1', display: 'flex', flexDirection: 'column', gap: '14px' }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid #e2e8f0', paddingBottom: '10px' }}>
-              <span style={{ fontSize: '14.5px', fontWeight: 800, color: '#1e3a8a' }}>
-                {q.label || `문제 ${qIdx + 1}`} 설정
-              </span>
-              {questions.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => handleRemoveQuestion(qIdx)}
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    padding: '4px 9px',
-                    borderRadius: '6px',
-                    border: '1px solid #fecaca',
-                    background: '#fef2f2',
-                    color: '#dc2626',
-                    fontSize: '11.5px',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Trash2 size={12} /> 삭제
-                </button>
-              )}
-            </div>
-
-            {/* 문항 기본 규격 + 채점 체계 */}
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '10px' }}>
-              <div>
-                <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>문항 명칭</label>
-                <input
-                  className="admin-input"
-                  value={q.label}
-                  onChange={(e) => updateQuestion(qIdx, { label: e.target.value })}
-                  placeholder="예: 문제 1, 논제 I"
-                />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>규정 글자 수</label>
-                <input
-                  className="admin-input"
-                  value={q.limit}
-                  onChange={(e) => updateQuestion(qIdx, { limit: e.target.value })}
-                  placeholder="예: 400±40자"
-                />
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>대학 고유 채점 방식</label>
-                <select
-                  className="admin-input"
-                  value={q.scoringType}
-                  onChange={(e) => updateQuestion(qIdx, { scoringType: e.target.value as 'score' | 'grade' | 'both' })}
-                >
-                  <option value="both">등급 + 원배점 병기 (추천)</option>
-                  <option value="grade">등급제 (A+~F 등) + 100점 환산 참고</option>
-                  <option value="score">원배점 점수제 (30/40/100점)</option>
-                </select>
-              </div>
-              <div>
-                <label style={{ display: 'block', fontSize: '11.5px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>문항 원만점 (점)</label>
-                <input
-                  type="number"
-                  className="admin-input"
-                  value={q.maxScore}
-                  onChange={(e) => updateQuestion(qIdx, { maxScore: Number(e.target.value) || 100 })}
-                />
-              </div>
-            </div>
-
-            {/* 등급 체계 입력 (등급제 또는 병기 선택 시 노출) */}
-            {q.scoringType !== 'score' && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', padding: '10px 12px', background: '#f8fafc', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px' }}>
-                  <label style={{ fontSize: '11.5px', fontWeight: 700, color: '#334155' }}>
-                    대학 공식 등급 체계 (쉼표 구분)
-                  </label>
-                  <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                    {GRADE_SCALE_PRESETS.map((p) => (
-                      <button
-                        key={p.label}
-                        type="button"
-                        onClick={() => updateQuestion(qIdx, { gradeScaleText: p.value })}
-                        style={{
-                          padding: '2px 8px',
-                          borderRadius: '9999px',
-                          border: '1px solid #cbd5e1',
-                          background: '#ffffff',
-                          fontSize: '11px',
-                          fontWeight: 600,
-                          color: '#334155',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {p.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <input
-                  className="admin-input"
-                  value={q.gradeScaleText}
-                  onChange={(e) => updateQuestion(qIdx, { gradeScaleText: e.target.value })}
-                  placeholder="예: A+, A, B+, B, C, D, F"
-                />
-              </div>
-            )}
-
-            {/* 문항별 PDF 첨부 & 시작 페이지 지정 (2가지 방식 모두 지원) */}
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '10px', alignItems: 'center', padding: '10px 12px', background: '#eff6ff', borderRadius: '8px', border: '1px solid #bfdbfe' }}>
-              <div>
-                <strong style={{ fontSize: '12.5px', color: '#1e3a8a', display: 'block' }}>
-                  📄 {q.label} 개별 문제지 PDF (미첨부 시 상단 통합 PDF 사용)
-                </strong>
-                <span style={{ fontSize: '11.5px', color: '#475569' }}>
-                  {q.questionPdfUrl ? (
-                    <span style={{ color: '#15803d', fontWeight: 700 }}>
-                      <CheckCircle2 size={12} style={{ display: 'inline', marginRight: '4px' }} />
-                      {q.questionPdfName}
-                    </span>
-                  ) : sharedPdfUrl ? (
-                    `통합 PDF 사용 중 → 시작 페이지: ${q.questionPdfStartPage}p`
-                  ) : (
-                    '개별 문제지 PDF를 업로드하거나 상단에 통합 PDF를 등록해 주세요.'
-                  )}
-                </span>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {!q.questionPdfUrl && sharedPdfUrl && (
-                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
-                    <span style={{ fontSize: '11.5px', fontWeight: 700, color: '#334155' }}>시작 페이지:</span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={q.questionPdfStartPage}
-                      onChange={(e) => updateQuestion(qIdx, { questionPdfStartPage: Math.max(1, Number(e.target.value) || 1) })}
-                      style={{ width: '56px', padding: '4px 6px', borderRadius: '6px', border: '1px solid #93c5fd', fontSize: '12px', textAlign: 'center', background: '#fff' }}
-                    />
-                  </div>
-                )}
-                <label
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    padding: '6px 11px',
-                    borderRadius: '7px',
-                    background: '#ffffff',
-                    color: '#2563eb',
-                    border: '1px solid #93c5fd',
-                    fontSize: '12px',
-                    fontWeight: 700,
-                    cursor: uploadingKey === `question-${qIdx}` ? 'wait' : 'pointer',
-                  }}
-                >
-                  <input
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    style={{ display: 'none' }}
-                    disabled={uploadingKey === `question-${qIdx}`}
-                    onChange={(e) => handleUploadQuestionPdf(qIdx, 'question', e)}
-                  />
-                  {uploadingKey === `question-${qIdx}` ? <Loader2 size={12} className="animate-spin" /> : <UploadCloud size={12} />}
-                  {q.questionPdfUrl ? '개별 PDF 교체' : '개별 PDF 첨부'}
-                </label>
-              </div>
-            </div>
-
-            {/* 대학 공식 채점기준 (텍스트 붙여넣기 + 채점기준 PDF 첨부 모두 지원) */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
-                <label style={{ fontSize: '12px', fontWeight: 800, color: '#0f172a' }}>
-                  📋 대학 공식 채점 기준 · 출제의도 · 등급표 원문 (텍스트 입력 및/또는 해설 PDF 첨부)
-                </label>
-                <label
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: '4px',
-                    padding: '4px 10px',
-                    borderRadius: '6px',
-                    background: q.rubricPdfUrl ? '#f0fdf4' : '#f8fafc',
-                    color: q.rubricPdfUrl ? '#15803d' : '#334155',
-                    border: `1px solid ${q.rubricPdfUrl ? '#86efac' : '#cbd5e1'}`,
-                    fontSize: '11.5px',
-                    fontWeight: 700,
-                    cursor: uploadingKey === `rubric-${qIdx}` ? 'wait' : 'pointer',
-                  }}
-                >
-                  <input
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    style={{ display: 'none' }}
-                    disabled={uploadingKey === `rubric-${qIdx}`}
-                    onChange={(e) => handleUploadQuestionPdf(qIdx, 'rubric', e)}
-                  />
-                  {uploadingKey === `rubric-${qIdx}` ? <Loader2 size={12} className="animate-spin" /> : <UploadCloud size={12} />}
-                  {q.rubricPdfUrl ? `채점기준 PDF 첨부됨 (${q.rubricPdfName})` : '+ 채점기준·해설 PDF 첨부'}
-                </label>
-              </div>
-              <textarea
-                rows={4}
-                className="admin-input"
-                value={q.rawRubricText}
-                onChange={(e) => updateQuestion(qIdx, { rawRubricText: e.target.value })}
-                placeholder="대학 입학처 보고서의 [출제의도], [채점기준/등급표], [감점 기준] 원문을 가공 없이 그대로 복사·붙여넣기 하세요. (또는 우측 버튼으로 해설 PDF를 통째로 첨부하세요)"
-                style={{ fontSize: '12.5px', lineHeight: 1.55, resize: 'vertical' }}
-              />
-            </div>
-
-            {/* 공식 예시답안 (선택) */}
-            <div>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                ✍️ 공식 예시답안 원문 (선택 — 해설 PDF에 포함되어 있으면 비워두셔도 됩니다)
-              </label>
-              <textarea
-                rows={3}
-                className="admin-input"
-                value={q.modelAnswer}
-                onChange={(e) => updateQuestion(qIdx, { modelAnswer: e.target.value })}
-                placeholder="예시답안 모달 및 AI 1:1 첨삭(Rewrite) 참고용으로 공식 예시답안을 붙여넣으세요."
-                style={{ fontSize: '12.5px', lineHeight: 1.55, resize: 'vertical' }}
-              />
-            </div>
-          </div>
-        ))}
-      </div>
+      {/* 3단계 (선택): AI가 생성한 대학 페이지 출제 경향 · 채점 기준 미리보기 및 간편 편집 */}
+      <PdfExtraTabsPreview
+        extractedTrends={extractedTrends}
+        setExtractedTrends={setExtractedTrends}
+        extractedScoring={extractedScoring}
+        setExtractedScoring={setExtractedScoring}
+        saveTrendsWithExam={saveTrendsWithExam}
+        setSaveTrendsWithExam={setSaveTrendsWithExam}
+        saveScoringWithExam={saveScoringWithExam}
+        setSaveScoringWithExam={setSaveScoringWithExam}
+        isSaving={isSaving}
+        isSavingTabsOnly={isSavingTabsOnly}
+        onSaveTabsOnly={handleSaveTabsOnly}
+      />
 
       {/* 하단 저장 버튼 */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', flexWrap: 'wrap' }}>
+        {isEditMode && (
+          <button
+            type="button"
+            onClick={() => {
+              const targetUrl =
+                returnToExamUrl ||
+                `/?view=exam&univ=${encodeURIComponent(selectedUniv)}&exam=${encodeURIComponent(editExamId || '')}`
+              window.location.href = targetUrl
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '12px 20px',
+              borderRadius: '10px',
+              border: '1px solid #cbd5e1',
+              background: '#ffffff',
+              color: '#334155',
+              fontSize: '13.5px',
+              fontWeight: 700,
+              cursor: 'pointer',
+            }}
+          >
+            <ArrowLeft size={15} />
+            문제보기 페이지로 돌아가기
+          </button>
+        )}
         <button
           type="button"
           onClick={handleSavePdfExam}
-          disabled={isSaving}
+          disabled={isSaving || isLoadingEditExam}
           className="admin-btn-save"
           style={{ padding: '12px 26px', fontSize: '14px' }}
         >
           {isSaving ? <Loader2 size={16} className="animate-spin" /> : <Save size={16} />}
-          {isSaving ? 'Supabase DB에 저장 중...' : '💾 PDF 원문 기출시험 DB에 바로 저장'}
+          {isSaving
+            ? 'Supabase DB에 저장 중...'
+            : isEditMode
+            ? '💾 수정사항 DB에 덮어쓰기 저장'
+            : '💾 PDF 원문 기출시험 DB에 바로 저장'}
         </button>
       </div>
     </section>

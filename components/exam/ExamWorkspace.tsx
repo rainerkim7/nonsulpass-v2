@@ -22,13 +22,15 @@ import {
   CheckCircle2,
   Coins,
   Terminal,
-  Camera
+  Camera,
+  Pencil
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import Brand from '@/components/common/Brand'
 import { useAuth } from '@/components/AuthGate'
 import { supabase } from '@/lib/supabase'
 import { getQuestionsData, fetchExamQuestionsFromDb, QuestionsMap } from '@/lib/exam-helper'
+import { getUniversityId } from '@/lib/constants/universities'
 import type { GradingReportData } from '@/types/grading'
 import ManuscriptModal from './ManuscriptModal'
 import HandwritingOcrModal from './HandwritingOcrModal'
@@ -773,6 +775,36 @@ export default function ExamWorkspace({
           <span className="slash">/</span> <strong>{currentQ.tag || `2026학년도 ${currentUniv} 수시`}</strong>{' '}
           <span className="slash">/</span> {currentQ.label}
         </div>
+        {/* 관리자 전용: 현재 시험을 관리자 콘솔 'PDF 원문 간편 등록' 수정 모드로 바로 열기 */}
+        {isAdmin && selectedExamId && (
+          <button
+            type="button"
+            onClick={() => {
+              const univId = getUniversityId(currentUniv) || (selectedExamId.includes('-') ? selectedExamId.split('-')[0] : 'hongik')
+              const currentUrl = typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : ''
+              const adminUrl = `/admin?univ=${encodeURIComponent(univId)}&tab=pdf-upload&editExamId=${encodeURIComponent(selectedExamId)}&returnUrl=${encodeURIComponent(currentUrl)}`
+              window.location.href = adminUrl
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '5px',
+              padding: '4px 11px',
+              borderRadius: '6px',
+              border: '1px solid #c7d2fe',
+              backgroundColor: '#eef2ff',
+              color: '#3730a3',
+              fontSize: '12px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              whiteSpace: 'nowrap',
+            }}
+            title="관리자 콘솔 'PDF 원문 간편 등록' 화면으로 이동하여 이 시험의 문항·페이지 분할·채점기준을 수정합니다"
+          >
+            <Pencil size={12} />
+            <span>이 시험 수정</span>
+          </button>
+        )}
       </div>
 
       <div className={currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl ? 'workspace pdf-mode' : 'workspace'}>
@@ -795,22 +827,63 @@ export default function ExamWorkspace({
             </div>
           )}
           <div className="question-tabs" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', gap: '24px' }}>
-              {Object.keys(questionsData)
-                .filter(k => questionsData[k] && questionsData[k].passages)
-                .map((qKey, idx) => {
-                  const isAnswered = (answers[qKey] || '').trim().length > 0
-                  return (
-                    <button
-                      key={qKey}
-                      className={activeQuestion === qKey ? 'active' : ''}
-                      onClick={() => setActiveQuestion(qKey)}
-                    >
-                      문제 {idx + 1} {isAnswered && <span className="tab-check"><Check /></span>}
-                    </button>
-                  )
-                })}
-            </div>
+            {(() => {
+              const qKeys = Object.keys(questionsData).filter(k => questionsData[k] && questionsData[k].passages)
+              // 탭 표시용 문항 라벨 포맷터: 소문항("1-1", "[문항 2-1]" 등)은 "문제 1-1", "문제 2-1" 형식으로 통일
+              const getTabLabel = (qKey: string, idx: number): string => {
+                const raw = (questionsData[qKey]?.label || '').trim()
+                if (!raw) return `문제 ${idx + 1}`
+                const subMatch = raw.match(/(\d+)\s*[-–]\s*(\d+)/)
+                if (subMatch) return `문제 ${subMatch[1]}-${subMatch[2]}`
+                return raw
+              }
+              const getMajorGroup = (tabLabel: string): string | null => {
+                const m = tabLabel.match(/(\d+)-(\d+)$/)
+                return m ? m[1] : null
+              }
+
+              return (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: qKeys.length >= 4 ? '14px' : '24px',
+                    flexWrap: 'wrap',
+                  }}
+                >
+                  {qKeys.map((qKey, idx) => {
+                    const isAnswered = (answers[qKey] || '').trim().length > 0
+                    const tabLabel = getTabLabel(qKey, idx)
+                    const currMajor = getMajorGroup(tabLabel)
+                    const prevMajor = idx > 0 ? getMajorGroup(getTabLabel(qKeys[idx - 1], idx - 1)) : null
+                    const showGroupDivider = Boolean(currMajor && prevMajor && currMajor !== prevMajor)
+
+                    return (
+                      <React.Fragment key={qKey}>
+                        {showGroupDivider && (
+                          <span
+                            aria-hidden="true"
+                            style={{
+                              width: '1px',
+                              height: '14px',
+                              backgroundColor: '#cbd5e1',
+                              marginBottom: '6px',
+                            }}
+                          />
+                        )}
+                        <button
+                          className={activeQuestion === qKey ? 'active' : ''}
+                          onClick={() => setActiveQuestion(qKey)}
+                          title={questionsData[qKey]?.label || tabLabel}
+                        >
+                          {tabLabel} {isAnswered && <span className="tab-check"><Check /></span>}
+                        </button>
+                      </React.Fragment>
+                    )
+                  })}
+                </div>
+              )
+            })()}
 
             {/* PDF 문제지 모드 전용: 문제 탭 우측 한 줄에 확대/축소 및 새 창 확대 컨트롤 통합 배치 */}
             {currentQ.displayMode === 'pdf' && currentQ.questionPdfUrl && (
@@ -1238,6 +1311,7 @@ export default function ExamWorkspace({
           {/* 📝 수험생 이전 제출 및 첨삭 이력 (날짜순 정렬 카드 리스트) */}
           <SubmissionHistorySection
             questionLabel={currentQ.label}
+            questionMaxScore={currentQ.scoringSystem?.maxScore || currentQ.points || 100}
             submissionHistory={submissionHistory}
             isLoadingHistory={isLoadingHistory}
             isLoggedIn={Boolean(user)}

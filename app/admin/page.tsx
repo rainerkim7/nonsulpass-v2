@@ -28,7 +28,6 @@ import {
 } from 'lucide-react'
 
 // 하위 전용 매니저 컴포넌트 임포트
-import AllInOneParser from './components/AllInOneParser'
 import PdfExamUploader from './components/PdfExamUploader'
 import ExamsManager, { ExamItem } from './components/ExamsManager'
 import TrendsManager, { TrendRow } from './components/TrendsManager'
@@ -156,12 +155,28 @@ function AdminConsoleContent() {
     router.replace(`/admin?univ=${newUniv}`)
   }, [router])
 
-  const [selectedFaculty, setSelectedFaculty] = useState<string>('인문계열 (공통)')
-  const [customFaculty, setCustomFaculty] = useState<string>('')
-  const [isCustomFaculty, setIsCustomFaculty] = useState<boolean>(false)
+  // 2. 활성화된 관리자 탭 및 PDF 수정 모드 URL 파라미터 상태
+  const paramTab = searchParams.get('tab')
+  const paramEditExamId = searchParams.get('editExamId')
+  const paramReturnUrl = searchParams.get('returnUrl')
+  const [editingPdfExamId, setEditingPdfExamId] = useState<string | null>(paramEditExamId || null)
+  const [activeAdminTab, setActiveAdminTab] = useState<'pdf-upload' | 'exams' | 'trends' | 'rubrics'>(() => {
+    if (paramTab === 'pdf-upload' || paramEditExamId) return 'pdf-upload'
+    if (paramTab === 'exams' || paramTab === 'trends' || paramTab === 'rubrics') {
+      return paramTab
+    }
+    return 'pdf-upload'
+  })
 
-  // 2. 활성화된 관리자 탭 상태
-  const [activeAdminTab, setActiveAdminTab] = useState<'pdf-upload' | 'all-in-one' | 'exams' | 'trends' | 'rubrics'>('all-in-one')
+  // URL 쿼리(tab, editExamId) 변경 시 탭과 수정 대상 시험 자동 동기화
+  useEffect(() => {
+    if (paramEditExamId) {
+      setEditingPdfExamId(paramEditExamId)
+      setActiveAdminTab('pdf-upload')
+    } else if (paramTab === 'pdf-upload' || paramTab === 'exams' || paramTab === 'trends' || paramTab === 'rubrics') {
+      setActiveAdminTab(paramTab)
+    }
+  }, [paramTab, paramEditExamId])
 
   // 3. 탭별 데이터 상태
   // (1) 기출/모의 시험지 목록
@@ -416,16 +431,11 @@ function AdminConsoleContent() {
     }
   }
 
-  // 대학 변경 시 전체 데이터 로드 및 기본 계열 설정
+  // 대학 변경 시 전체 데이터 로드
   useEffect(() => {
     fetchExams(selectedUniv)
     fetchTrends(selectedUniv)
     fetchRubrics(selectedUniv)
-
-    const faculties = UNIVERSITY_FACULTIES[selectedUniv] || ['인문계열']
-    setSelectedFaculty(faculties[0])
-    setIsCustomFaculty(false)
-    setCustomFaculty('')
   }, [selectedUniv, fetchExams, fetchTrends, fetchRubrics])
 
   const currentUnivObj = univList.find((u) => u.id === selectedUniv)
@@ -659,19 +669,7 @@ function AdminConsoleContent() {
                 }}
               >
                 <FileText size={15} style={{ color: '#059669' }} />
-                📄 PDF 원문 간편 등록 (권장)
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveAdminTab('all-in-one')}
-                className={`admin-tab-btn ${activeAdminTab === 'all-in-one' ? 'active' : ''}`}
-                style={{
-                  color: activeAdminTab === 'all-in-one' ? '#1e3a8a' : '#2563eb',
-                  fontWeight: 800
-                }}
-              >
-                <Sparkles size={15} style={{ color: '#2563eb' }} />
-                ⚡ 입학처 통합 보고서 올인원 추출기
+                📄 PDF 원문 통합 등록 · 수정
               </button>
               <button
                 type="button"
@@ -702,37 +700,25 @@ function AdminConsoleContent() {
         </section>
 
         {/* ========================================================================= */}
-        {/* TAB 0: 📄 PDF 원문 간편 등록 (하이브리드 PDF + 대학 고유 채점기준) */}
+        {/* TAB 0: 📄 PDF 원문 간편 등록 및 수정 (하이브리드 PDF + 대학 고유 채점기준) */}
         {/* ========================================================================= */}
         {activeAdminTab === 'pdf-upload' && (
           <PdfExamUploader
             selectedUniv={selectedUniv}
             univName={currentUnivName}
+            editExamId={editingPdfExamId}
+            returnToExamUrl={paramReturnUrl}
+            onCancelEdit={() => {
+              setEditingPdfExamId(null)
+              router.replace(`/admin?univ=${selectedUniv}&tab=pdf-upload`)
+            }}
             onDataSaved={refreshAllData}
             showNotice={showNotice}
           />
         )}
 
         {/* ========================================================================= */}
-        {/* TAB 1: ⚡ 입학처 통합 보고서 올인원 추출기 (All-in-One Parser) */}
-        {/* ========================================================================= */}
-        {activeAdminTab === 'all-in-one' && (
-          <AllInOneParser
-            selectedUniv={selectedUniv}
-            univName={currentUnivName}
-            selectedFaculty={selectedFaculty}
-            setSelectedFaculty={setSelectedFaculty}
-            customFaculty={customFaculty}
-            setCustomFaculty={setCustomFaculty}
-            isCustomFaculty={isCustomFaculty}
-            setIsCustomFaculty={setIsCustomFaculty}
-            onDataSaved={refreshAllData}
-            showNotice={showNotice}
-          />
-        )}
-
-        {/* ========================================================================= */}
-        {/* TAB 2: 기출·모의고사 관리 (Exams Manager) */}
+        {/* TAB 1: 기출·모의고사 관리 (Exams Manager) */}
         {/* ========================================================================= */}
         {activeAdminTab === 'exams' && (
           <ExamsManager
@@ -741,6 +727,11 @@ function AdminConsoleContent() {
             exams={exams}
             isLoadingExams={isLoadingExams}
             onRefresh={() => fetchExams(selectedUniv)}
+            onEditInPdfUploader={(examId) => {
+              setEditingPdfExamId(examId)
+              setActiveAdminTab('pdf-upload')
+              router.replace(`/admin?univ=${selectedUniv}&tab=pdf-upload&editExamId=${encodeURIComponent(examId)}`)
+            }}
             showNotice={showNotice}
           />
         )}

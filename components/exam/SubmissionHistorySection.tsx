@@ -59,6 +59,8 @@ export interface SubmissionHistoryItem {
 
 interface SubmissionHistorySectionProps {
   questionLabel: string
+  /** 현재 문항의 공식 원만점 (예: 15, 30, 50, 100 등) */
+  questionMaxScore?: number
   submissionHistory: SubmissionHistoryItem[]
   isLoadingHistory: boolean
   isLoggedIn: boolean
@@ -70,6 +72,7 @@ interface SubmissionHistorySectionProps {
 
 export default function SubmissionHistorySection({
   questionLabel,
+  questionMaxScore = 100,
   submissionHistory,
   isLoadingHistory,
   isLoggedIn,
@@ -170,7 +173,20 @@ export default function SubmissionHistorySection({
               hour: '2-digit',
               minute: '2-digit',
             })
-            const isPass = item.total_score >= 82
+            // 리포트에 저장된 문항 원만점 또는 현재 문항 배점을 기준으로 분모와 100점 환산 합격선(82%) 동적 계산
+            const itemMaxScore =
+              Number(item.grading_report?.maxPossibleScore) > 0
+                ? Number(item.grading_report.maxPossibleScore)
+                : Number(questionMaxScore) > 0
+                ? Number(questionMaxScore)
+                : 100
+            const normalizedScore =
+              typeof item.grading_report?.normalizedScore100 === 'number'
+                ? item.grading_report.normalizedScore100
+                : itemMaxScore > 0
+                ? (item.total_score / itemMaxScore) * 100
+                : item.total_score
+            const isPass = normalizedScore >= 82
             const isSelected = selectedSubmissionId === item.id
 
             return (
@@ -266,7 +282,7 @@ export default function SubmissionHistorySection({
                     >
                       {item.total_score}
                     </strong>
-                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>/ 100점</span>
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>/ {itemMaxScore}점</span>
                   </div>
                   <button
                     type="button"

@@ -69,6 +69,8 @@ interface ExamsManagerProps {
   exams: ExamItem[]
   isLoadingExams: boolean
   onRefresh: () => void
+  /** PDF 원문 간편 등록·수정 탭으로 해당 시험을 바로 여는 콜백 */
+  onEditInPdfUploader?: (examId: string) => void
   showNotice: (type: 'success' | 'error', message: string) => void
 }
 
@@ -78,6 +80,7 @@ export default function ExamsManager({
   exams,
   isLoadingExams,
   onRefresh,
+  onEditInPdfUploader,
   showNotice
 }: ExamsManagerProps) {
   const [isMounted, setIsMounted] = useState<boolean>(false)
@@ -712,6 +715,32 @@ export default function ExamsManager({
 
               {/* 우측: 수정 및 삭제 액션 버튼 */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, marginLeft: '16px' }}>
+
+                {/* PDF 원문 간편 수정 바로가기 버튼 */}
+                {onEditInPdfUploader && (
+                  <button
+                    type="button"
+                    onClick={() => onEditInPdfUploader(exam.id)}
+                    style={{
+                      background: '#ecfdf5',
+                      border: '1px solid #6ee7b7',
+                      padding: '6px 11px',
+                      color: '#047857',
+                      cursor: 'pointer',
+                      borderRadius: '8px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '4px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      transition: 'all 0.15s'
+                    }}
+                    title="PDF 원문 간편 등록·수정 화면에서 이 시험을 편집합니다"
+                  >
+                    <FileText size={13} />
+                    <span>PDF 수정</span>
+                  </button>
+                )}
 
                 {/* 수정 버튼 */}
                 <button

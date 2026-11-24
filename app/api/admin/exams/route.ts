@@ -9,10 +9,29 @@ import { getUniversityName, getUniversityTracks } from '@/lib/constants/universi
 
 export const dynamic = 'force-dynamic'
 
-// 1. 기출문제 목록 조회 (GET)
+// 1. 기출문제 목록 조회 또는 단일 시험(id) 조회 (GET)
 export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url)
+    const examId = searchParams.get('id')
+
+    // 단일 시험 수정 모드 로드용 (?id=...)
+    if (examId) {
+      const { data, error } = await supabase
+        .from('exams')
+        .select('*')
+        .eq('id', examId)
+        .maybeSingle()
+
+      if (error) {
+        return NextResponse.json({ error: error.message }, { status: 500 })
+      }
+      if (!data) {
+        return NextResponse.json({ error: `시험(${examId})을 찾을 수 없습니다.` }, { status: 404 })
+      }
+      return NextResponse.json({ success: true, exam: data })
+    }
+
     const univId = searchParams.get('univ_id') || 'hongik'
 
     const { data, error } = await supabase
